@@ -560,6 +560,7 @@ td.amt .sub { font-weight: 400; }
 
 <script>
 /*PARSER-START*/
+const isProxy = (window.location.protocol === 'http:' || window.location.protocol === 'https:');
 const CFG = {
   DATA: 'https://mainnet.neardata.xyz',
   RPCS: ['https://free.rpc.fastnear.com', 'https://rpc.mainnet.near.org'],
@@ -584,7 +585,7 @@ const CFG = {
   // explorer for transaction and wallet links
   EXPLORER_TX: 'https://pikespeak.ai/transaction-viewer/',
   EXPLORER_ACCOUNT: 'https://pikespeak.ai/wallet-explorer/',
-  RAEN: 'https://raen.foundation/api/public/v1',
+  RAEN: isProxy ? '/api/raen' : 'https://raen.foundation/api/public/v1',
   INTEAR_WS: 'wss://api.intea.rs/ws',     // Intear API: free, no key, pushes trades as each block lands
   INTEAR_HTTP: 'https://api.intea.rs',
   INTEAR_RESUB_MS: 60000,  // re-subscribe each minute so newly launched tokens are included (no gap: resumes by id)
@@ -1397,7 +1398,9 @@ function mapRaen(x) {
 
 async function raenTick() {
   reqTimes.push(Date.now());
-  const r = await fetchT(CFG.RAEN + '/trades', { headers: { Authorization: 'Bearer ' + raenKey }, cache: 'no-store' }, CFG.RAEN_TIMEOUT_MS);
+  const headers = { cache: 'no-store' };
+  if (raenKey) headers.Authorization = 'Bearer ' + raenKey;
+  const r = await fetchT(CFG.RAEN + '/trades', { headers, cache: 'no-store' }, CFG.RAEN_TIMEOUT_MS);
   if (r.status === 401 || r.status === 403) { const e = new Error('RAEN refused the key'); e.raenAuth = true; throw e; }
   if (r.status === 429) {
     const ra = parseFloat(r.headers.get('Retry-After')) || 10;
@@ -1419,7 +1422,7 @@ async function raenTick() {
   raenLastOk = Date.now();
 }
 
-function raenWanted() { return (source === 'both' || source === 'raen') && !!raenKey && Date.now() > raenDownUntil; }
+function raenWanted() { return (source === 'both' || source === 'raen') && (isProxy || !!raenKey) && Date.now() > raenDownUntil; }
 function intearWanted() { return source === 'both' || source === 'intear'; }
 // Intear counts as healthy while connected, and for a short grace period while (re)connecting
 // healthy = connected AND heard from recently (the NEAR-price heartbeat arrives about every second)
@@ -1851,7 +1854,9 @@ $('ticker-viewport').addEventListener('wheel', e => {
   if (Math.abs(e.deltaY) > Math.abs(e.deltaX) && row.scrollWidth > row.clientWidth) { row.scrollLeft += e.deltaY; e.preventDefault(); }
 }, { passive: false });
 async function alertsTick() {
-  const r = await fetchT(CFG.RAEN + '/alerts', { headers: { Authorization: 'Bearer ' + raenKey }, cache: 'no-store' }, CFG.RAEN_TIMEOUT_MS);
+  const headers = { cache: 'no-store' };
+  if (raenKey) headers.Authorization = 'Bearer ' + raenKey;
+  const r = await fetchT(CFG.RAEN + '/alerts', { headers, cache: 'no-store' }, CFG.RAEN_TIMEOUT_MS);
   if (r.status === 401 || r.status === 403) { const e = new Error('key'); e.auth = true; throw e; }
   if (r.status === 429) { const e = new Error('rate'); e.rate = true; e.retryMs = (parseFloat(r.headers.get('Retry-After')) || 5) * 1000; throw e; }
   if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -2050,7 +2055,7 @@ setTimeout(updateSoundBtn, 0);
 async function alertsLoop() {
   let fails = 0;
   while (true) {
-    if (!raenKey) { renderTicker('Alerts come from RAEN. <button type="button" id="ticker-addkey">Add your RAEN key</button> to see them.'); await sleep(2000); continue; }
+    if (!isProxy && !raenKey) { renderTicker('Alerts come from RAEN. <button type="button" id="ticker-addkey">Add your RAEN key</button> to see them.'); await sleep(2000); continue; }
     const started = Date.now();
     try {
       await alertsTick();
@@ -2202,8 +2207,8 @@ function updateSourceUI() {
   $('src-intear').setAttribute('aria-pressed', source === 'intear');
   $('src-raen').setAttribute('aria-pressed', source === 'raen');
   $('src-chain').setAttribute('aria-pressed', source === 'chain');
-  $('btn-raenkey').textContent = raenKey ? 'RAEN key ✓' : 'RAEN key';
-  $('keyform').hidden = !(source === 'raen' && !raenKey);
+  $('btn-raenkey').textContent = isProxy ? (raenKey ? 'RAEN custom key ✓' : 'RAEN Proxy ✓') : (raenKey ? 'RAEN key ✓' : 'RAEN key');
+  $('keyform').hidden = !(source === 'raen' && !raenKey && !isProxy);
   document.querySelectorAll('[data-chain]').forEach(el => { el.hidden = !chainWanted(); });
   document.querySelectorAll('[data-raen]').forEach(el => { el.hidden = !raenWanted(); });
 }
