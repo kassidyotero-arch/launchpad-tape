@@ -1400,7 +1400,11 @@ async function raenTick() {
   reqTimes.push(Date.now());
   const headers = { cache: 'no-store' };
   if (raenKey) headers.Authorization = 'Bearer ' + raenKey;
-  const r = await fetchT(CFG.RAEN + '/trades', { headers, cache: 'no-store' }, CFG.RAEN_TIMEOUT_MS);
+  let r = await fetchT(CFG.RAEN + '/trades', { headers, cache: 'no-store' }, CFG.RAEN_TIMEOUT_MS);
+  if (r.status === 404 && CFG.RAEN === '/api/raen' && raenKey) {
+    CFG.RAEN = 'https://raen.foundation/api/public/v1';
+    r = await fetchT(CFG.RAEN + '/trades', { headers, cache: 'no-store' }, CFG.RAEN_TIMEOUT_MS);
+  }
   if (r.status === 401 || r.status === 403) { const e = new Error('RAEN refused the key'); e.raenAuth = true; throw e; }
   if (r.status === 429) {
     const ra = parseFloat(r.headers.get('Retry-After')) || 10;
@@ -1856,7 +1860,11 @@ $('ticker-viewport').addEventListener('wheel', e => {
 async function alertsTick() {
   const headers = { cache: 'no-store' };
   if (raenKey) headers.Authorization = 'Bearer ' + raenKey;
-  const r = await fetchT(CFG.RAEN + '/alerts', { headers, cache: 'no-store' }, CFG.RAEN_TIMEOUT_MS);
+  let r = await fetchT(CFG.RAEN + '/alerts', { headers, cache: 'no-store' }, CFG.RAEN_TIMEOUT_MS);
+  if (r.status === 404 && CFG.RAEN === '/api/raen' && raenKey) {
+    CFG.RAEN = 'https://raen.foundation/api/public/v1';
+    r = await fetchT(CFG.RAEN + '/alerts', { headers, cache: 'no-store' }, CFG.RAEN_TIMEOUT_MS);
+  }
   if (r.status === 401 || r.status === 403) { const e = new Error('key'); e.auth = true; throw e; }
   if (r.status === 429) { const e = new Error('rate'); e.rate = true; e.retryMs = (parseFloat(r.headers.get('Retry-After')) || 5) * 1000; throw e; }
   if (!r.ok) throw new Error('HTTP ' + r.status);
