@@ -542,12 +542,12 @@ td.amt .sub { font-weight: 400; }
     </div>
     <div class="empty" id="empty">
       <h3>Listening for swaps</h3>
-      <p id="empty-msg">Every finalized NEAR block is checked for Rhea swaps of tokens launched on Nearly or JustHoot. Only trades that happen from now on are shown, no history. Meme trading comes in bursts, so the first row can take a minute.</p>
+      <p id="empty-msg">Waiting for new Rhea swaps of tokens launched on Nearly or JustHoot. The last 100 trades are cached locally and roll over automatically.</p>
     </div>
   </section>
 
   <footer class="foot">
-    <div>Real-time only: the tape starts at the newest block when the page opens and never loads past transactions. After a pause or a dropped connection it jumps to the newest block instead of catching up.</div>
+    <div>Rolling tape: the last 100 trades are saved locally and roll over automatically as new transactions arrive. After a pause or dropped connection, the tape updates from the newest block.</div>
     <div>Detection: a trade is any successful Rhea swap where one side is a token under <code>*.nearlytrade.near</code> (Nearly) or <code>*.launchpad.justhoot.near</code> / <code>*.v2-launchpad.justhoot.near</code> (JustHoot, including tokens still on their bonding stage). Market cap = trade price × <code>ft_total_supply</code> at the time the token was first seen.</div>
     <div>NEAR value is exact when the swap touches wNEAR; marked <span class="est">est</span> when it was priced through another token. USD uses the NEAR price when the trade arrived.</div>
     <div>Fastest mode races all feeds at once: Intear, the on-chain decoder (reading blocks before finality when the block service allows it) and RAEN. The first to see a trade shows it; Settings shows which feed is winning.</div>
@@ -592,8 +592,8 @@ const CFG = {
   INTEAR_GRACE_MS: 4000,   // how long a dropped Intear feed may reconnect before on-chain decoding steps in
   ALERTS_POLL_MS: 2500, // RAEN alerts refresh; doubles automatically if RAEN answers 429
   RAEN_POLL_MS: 1000, // fastest RAEN poll; doubles automatically if RAEN answers 429
-  MAX_TRADES: 3000,
-  MAX_ROWS: 400,
+  MAX_TRADES: 100,
+  MAX_ROWS: 100,
   MAX_LAG_MS: 8000,
   PIPELINE: 2,
   HOT_STANDBY: true,
@@ -744,9 +744,33 @@ async function fetchT(url, opts, ms) {
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 // ---------- state ----------
-let trades = []; // real-time only: start empty every time the page opens
+const launches = new Map(); // token -> launch row
+const cleanTrade = t => {
+  const o = Object.assign({}, t);
+  delete o._k; delete o._html; delete o._wasLive;
+  return o;
+};
+let saveTradesT = null;
+function scheduleSaveTrades() {
+  if (saveTradesT) return;
+  saveTradesT = setTimeout(() => { saveTradesT = null; saveTrades(); }, 1000);
+}
+function saveTrades() {
+  try {
+    const list = trades.slice(0, CFG.MAX_TRADES).map(cleanTrade);
+    store.set('tape.trades', list);
+  } catch (e) {}
+}
+window.addEventListener('beforeunload', () => { if (saveTradesT) { clearTimeout(saveTradesT); saveTradesT = null; } saveTrades(); });
+window.addEventListener('pagehide', () => { if (saveTradesT) { clearTimeout(saveTradesT); saveTradesT = null; } saveTrades(); });
+
+const rawSavedTrades = store.get('tape.trades', []);
+let trades = Array.isArray(rawSavedTrades) ? rawSavedTrades.slice(0, CFG.MAX_TRADES) : [];
 const seenIds = new Set();
-store.set('tape.trades', null);
+for (const t of trades) {
+  seenIds.add(t.id);
+  if (t.kind === 'launch') launches.set(t.token, t);
+}
 const meta = new Map(Object.entries(store.get('tape.meta', {})));
 meta.set(CFG.WNEAR, { name: 'Wrapped NEAR', symbol: 'wNEAR', decimals: 24 });
 const labels = store.get('tape.labels', {});
@@ -1202,7 +1226,6 @@ function render() {
 
 // ---------- ingest ----------
 // ---------- token launches ----------
-const launches = new Map(); // token -> launch row
 function addLaunch(l, watchHits) {
   const known = launches.get(l.token);
   if (known) {
@@ -1210,6 +1233,7 @@ function addLaunch(l, watchHits) {
     if (!known.creator && l.creator) {
       known.creator = l.creator;
       if (isWatched(l.creator) && !known.watchedAt) { known.watchedAt = Date.now(); watchHits.push(known); }
+      scheduleSaveTrades();
       scheduleRender();
     }
     if (!known.tx && l.tx) known.tx = l.tx;
@@ -1221,6 +1245,7 @@ function addLaunch(l, watchHits) {
   launches.set(l.token, l);
   if (l.creator && isWatched(l.creator)) { l.watchedAt = l.seenAt; watchHits.push(l); }
   trades.push(l); freshIds.add(l.id);
+  scheduleSaveTrades();
   needMeta(l.token);
   sleep(3000).then(() => { const m = meta.get(l.token); if (!m || m.failed) { meta.delete(l.token); needMeta(l.token); } }); // contract may finish deploying a moment later
   sleep(CFG.LAUNCH_GLOW_MS + 100).then(scheduleRender); // settle the glow
@@ -1261,6 +1286,7 @@ function addTrades(list, sortAfter) {
       if (t.src === 'raen' && twin.usdRaen == null) { twin.usdRaen = t.usd; if (!twin.tx && t.tx) twin.tx = t.tx; }
       if (twin.src === 'raen' && !twin.tx && t.tx) twin.tx = t.tx;
       if (t.src === 'intear' && twin.usdRaen == null && twin.src !== 'raen' && t.usd != null) twin.usdRaen = t.usd;
+      scheduleSaveTrades();
       continue;
     }
     t.usdRate = nearUsd || null;
@@ -1274,6 +1300,7 @@ function addTrades(list, sortAfter) {
   if (!added) return;
   trades.sort((a, b) => b.seenAt - a.seenAt || b.ts - a.ts || (a.id < b.id ? 1 : -1));
   if (trades.length > CFG.MAX_TRADES) { for (const t of trades.splice(CFG.MAX_TRADES)) { seenIds.delete(t.id); if (t.kind === 'launch') launches.delete(t.token); } }
+  scheduleSaveTrades();
   if (seenIds.size > 60000) { seenIds.clear(); for (const t of trades) seenIds.add(t.id); } // long sessions stay light
   scheduleRender();
 }
@@ -2199,13 +2226,14 @@ $('keyform').addEventListener('submit', e => {
 });
 $('key-cancel').onclick = () => { setSource('chain'); $('keyform').hidden = true; };
 updateSourceUI();
-$('btn-clear').onclick = () => { trades = []; seenIds.clear(); launches.clear(); scheduleRender(); };
+$('btn-clear').onclick = () => { trades = []; seenIds.clear(); launches.clear(); store.set('tape.trades', []); scheduleRender(); };
 
 // ---------- boot ----------
 syncFilterUI();
 updateFilterBadge();
 renderWatchList();
 CFG.PADS.forEach(p => needMeta(p.token)); // fallback logos
+trades.forEach(t => { needMeta(t.token); if (t.counter && t.counter !== CFG.WNEAR) needMeta(t.counter); });
 render();
 (async () => { await loadRefPrices(); await loadNearUsd(); if (nearUsd) showPx('NEAR', nearUsd, null); scheduleRender(); })();
 connectPrices();
