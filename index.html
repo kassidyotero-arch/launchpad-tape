@@ -711,9 +711,17 @@ td.amt .sub { font-weight: 400; }
 
 <script>
 /*PARSER-START*/
+// --- proxy mode: served from the VPS -> API calls go through the local reverse proxy (egress = VPS IP); on GitHub Pages -> direct ---
+const PROXY_MODE = location.protocol.startsWith('http') && !/(^|\.)github\.io$/.test(location.hostname);
+const PXB = PROXY_MODE ? location.origin + '/x-c0de400131fd' : '';
+const WSB = PROXY_MODE ? (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/x-c0de400131fd' : '';
+const BIN = PROXY_MODE ? PXB + '/binance' : 'https://api.binance.com';
+const CG  = PROXY_MODE ? PXB + '/coingecko' : 'https://api.coingecko.com';
+const REF = PROXY_MODE ? PXB + '/ref' : 'https://indexer.ref.finance';
+const IPR = PROXY_MODE ? PXB + '/intear-prices' : 'https://prices.intear.tech';
 const CFG = {
-  DATA: 'https://mainnet.neardata.xyz',
-  RPCS: ['https://free.rpc.fastnear.com', 'https://rpc.mainnet.near.org'],
+  DATA: PROXY_MODE ? PXB + '/neardata' : 'https://mainnet.neardata.xyz',
+  RPCS: PROXY_MODE ? [PXB + '/rpc-free', PXB + '/rpc-near'] : ['https://free.rpc.fastnear.com', 'https://rpc.mainnet.near.org'],
   PADS: [
     // logos: tried in order; if all fail, the launchpad's own token icon from the chain is used, then the name
     // suffixes: every launchpad account that creates this platform's tokens
@@ -739,9 +747,9 @@ const CFG = {
   // explorer for transaction and wallet links
   EXPLORER_TX: 'https://pikespeak.ai/transaction-viewer/',
   EXPLORER_ACCOUNT: 'https://pikespeak.ai/wallet-explorer/',
-  RAEN: 'https://raen.foundation/api/public/v1',
-  INTEAR_WS: 'wss://api.intea.rs/ws',     // Intear API: free, no key, pushes trades as each block lands
-  INTEAR_HTTP: 'https://api.intea.rs',
+  RAEN: PROXY_MODE ? PXB + '/raen/api/public/v1' : 'https://raen.foundation/api/public/v1',
+  INTEAR_WS: PROXY_MODE ? WSB + '/intear/ws' : 'wss://api.intea.rs/ws',     // Intear API: free, no key, pushes trades as each block lands
+  INTEAR_HTTP: PROXY_MODE ? PXB + '/intear' : 'https://api.intea.rs',
   INTEAR_RESUB_MS: 60000,  // re-subscribe each minute so newly launched tokens are included (no gap: resumes by id)
   INTEAR_IDLE_MS: 20000,   // the server pings every 15 s; silence this long means the socket is dead
   INTEAR_GRACE_MS: 4000,   // how long a dropped Intear feed may reconnect before on-chain decoding steps in
@@ -965,17 +973,17 @@ F.pads = Object.assign({}, DEFAULT_F.pads, F.pads || {});
 // ---------- prices ----------
 async function loadNearUsd() {
   try {
-    const r = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=NEARUSDT');
+    const r = await fetch(BIN + '/api/v3/ticker/price?symbol=NEARUSDT');
     const j = await r.json(); const p = parseFloat(j.price); if (p > 0) { nearUsd = p; return; }
   } catch (e) {}
   try {
-    const r = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=near&vs_currencies=usd');
+    const r = await fetch(CG + '/api/v3/simple/price?ids=near&vs_currencies=usd');
     const j = await r.json(); if (j.near && j.near.usd) nearUsd = j.near.usd;
   } catch (e) {}
   if (!nearUsd && refPrices[CFG.WNEAR]) nearUsd = parseFloat(refPrices[CFG.WNEAR].price) || null;
 }
 async function loadRefPrices() {
-  try { const r = await fetch('https://indexer.ref.finance/list-token-price'); if (r.ok) refPrices = await r.json(); } catch (e) {}
+  try { const r = await fetch(REF + '/list-token-price'); if (r.ok) refPrices = await r.json(); } catch (e) {}
 }
 
 // ---------- live NEAR + BTC prices (Binance WebSocket, REST/CoinGecko fallback) ----------
@@ -1003,11 +1011,11 @@ const TEAR_ID = 'token.intear.near';
 let tearPrev = null, tearLiveAt = 0;
 async function tearPriceUsd() {
   try { // Rhea single-token price
-    const r = await fetch('https://indexer.ref.finance/get-token-price?token_id=' + TEAR_ID);
+    const r = await fetch(REF + '/get-token-price?token_id=' + TEAR_ID);
     if (r.ok) { const j = await r.json(); const p = parseFloat(j && (j.price ?? j)); if (p > 0) return p; }
   } catch (e) {}
   try { // Intear's own price service
-    const r = await fetch('https://prices.intear.tech/price?token_id=' + TEAR_ID);
+    const r = await fetch(IPR + '/price?token_id=' + TEAR_ID);
     if (r.ok) { const t = await r.text(); let p = parseFloat(t); if (!(p > 0)) { try { const j = JSON.parse(t); p = parseFloat(j.price ?? j.usd ?? j[TEAR_ID]); } catch (e) {} } if (p > 0) return p; }
   } catch (e) {}
   const rp = refPrices[TEAR_ID]; // full Rhea list, refreshed every 2 minutes
@@ -1035,12 +1043,12 @@ function startPricePolling() {
   if (pxPollTimer) return;
   const poll = async () => {
     try {
-      const r = await fetch('https://api.binance.com/api/v3/ticker/24hr?symbols=' + encodeURIComponent('["NEARUSDT","BTCUSDT"]'));
+      const r = await fetch(BIN + '/api/v3/ticker/24hr?symbols=' + encodeURIComponent('["NEARUSDT","BTCUSDT"]'));
       if (!r.ok) throw 0;
       for (const t of await r.json()) showPx(t.symbol.replace('USDT', ''), +t.lastPrice, +t.priceChangePercent);
     } catch (e) {
       try {
-        const r = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=near,bitcoin&vs_currencies=usd&include_24hr_change=true');
+        const r = await fetch(CG + '/api/v3/simple/price?ids=near,bitcoin&vs_currencies=usd&include_24hr_change=true');
         const j = await r.json();
         if (j.near) showPx('NEAR', j.near.usd, j.near.usd_24h_change);
         if (j.bitcoin) showPx('BTC', j.bitcoin.usd, j.bitcoin.usd_24h_change);
@@ -1051,7 +1059,7 @@ function startPricePolling() {
 }
 function connectPrices() {
   let ws;
-  try { ws = new WebSocket('wss://stream.binance.com:9443/stream?streams=nearusdt@miniTicker/btcusdt@miniTicker'); }
+  try { ws = new WebSocket((PROXY_MODE ? WSB + '/binance-ws' : 'wss://stream.binance.com:9443') + '/stream?streams=nearusdt@miniTicker/btcusdt@miniTicker'); }
   catch (e) { startPricePolling(); return; }
   ws.onopen = () => { pxWsFails = 0; if (pxPollTimer) { clearInterval(pxPollTimer); pxPollTimer = null; } };
   ws.onmessage = ev => {
@@ -1076,7 +1084,7 @@ async function view(account, method, args) {
     request_type: 'call_function', finality: 'final', account_id: account, method_name: method,
     args_base64: btoa(JSON.stringify(args || {})) } });
   let err;
-  const rpcs = apiKey ? ['https://rpc.mainnet.fastnear.com?apiKey=' + encodeURIComponent(apiKey)].concat(CFG.RPCS) : CFG.RPCS;
+  const rpcs = apiKey ? [(PROXY_MODE ? PXB + '/rpc-fastnear?apiKey=' : 'https://rpc.mainnet.fastnear.com?apiKey=') + encodeURIComponent(apiKey)].concat(CFG.RPCS) : CFG.RPCS;
   for (let k = 0; k < rpcs.length; k++) {
     const url = rpcs[(rpcIdx + k) % rpcs.length];
     try {
