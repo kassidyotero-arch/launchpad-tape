@@ -3050,6 +3050,7 @@ document.addEventListener('click', e => {
     if (v === null) return;
     if (v.trim()) labels[acct] = v.trim().slice(0, 40); else delete labels[acct];
     store.set('tape.labels', labels); renderWatchList(); scheduleRender();
+    if (window.tapeLabelPush) window.tapeLabelPush(acct, labels[acct] || null); // proxy-mode: sync the name to the bot
   }
 });
 
@@ -3200,6 +3201,59 @@ loop();
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
     });
   }
+  // ---- wallet labels: shared through the bot ----
+  // The bot keeps the master copy (labels.json, published like the watchlist).
+  // A three-way merge against the last synced state keeps Telegram edits, web
+  // edits and deletions consistent, and pushes this browser's existing local
+  // names up on first sync so nothing is lost.
+  var labelsSynced = store.get('tape.labelsSynced', {}) || {};
+  function postLabels(suffix, body) {
+    return fetch(PXB + '/labels/' + suffix, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .catch(function () { return null; });
+  }
+  window.tapeLabelPush = function (acct, name) {
+    var done = function (j) {
+      if (!j || !j.ok) return;
+      if (name) labelsSynced[acct] = name; else delete labelsSynced[acct];
+      store.set('tape.labelsSynced', labelsSynced);
+    };
+    if (name) { var m = {}; m[acct] = name; postLabels('set', { labels: m }).then(done); }
+    else postLabels('remove', { accounts: [acct] }).then(done);
+  };
+  function syncLabels() {
+    jget('labels.json').then(function (srv) {
+      if (!srv || typeof srv !== 'object' || Array.isArray(srv)) srv = {};
+      var pushSet = {}, pushRemove = [], dirty = false;
+      Object.keys(labels).forEach(function (a) {
+        if (srv[a] != null) {
+          if (labels[a] !== srv[a] && labels[a] === labelsSynced[a]) { labels[a] = srv[a]; dirty = true; } // server moved, local untouched: adopt
+          else if (labels[a] !== srv[a]) pushSet[a] = labels[a]; // local edit wins: push it up
+        } else if (labelsSynced[a] != null) {
+          if (labels[a] === labelsSynced[a]) { delete labels[a]; dirty = true; } // deleted on the server
+          else pushSet[a] = labels[a]; // edited locally after the server deleted it
+        } else pushSet[a] = labels[a]; // local only: first sync pushes it up
+      });
+      Object.keys(srv).forEach(function (a) {
+        if (labels[a] == null && labelsSynced[a] == null) { labels[a] = srv[a]; dirty = true; } // brand new from the bot
+      });
+      Object.keys(labelsSynced).forEach(function (a) {
+        if (labels[a] == null && srv[a] != null) pushRemove.push(a); // deleted here, still on the server
+      });
+      var jobs = [];
+      if (Object.keys(pushSet).length) jobs.push(postLabels('set', { labels: pushSet }));
+      if (pushRemove.length) jobs.push(postLabels('remove', { accounts: pushRemove }));
+      Promise.all(jobs).then(function () {
+        var ns = {};
+        Object.keys(srv).forEach(function (a) { ns[a] = srv[a]; });
+        Object.keys(pushSet).forEach(function (a) { ns[a] = pushSet[a]; });
+        pushRemove.forEach(function (a) { delete ns[a]; });
+        labelsSynced = ns;
+        store.set('tape.labelsSynced', labelsSynced);
+        if (dirty) { store.set('tape.labels', labels); renderWatchList(); alertsSig = ''; renderTicker(); scheduleRender(); }
+      });
+    });
+  }
   var KIND_LABEL = { whale: '🐋 Whale', bigsell: '⚠️ Big sell', watch: '👀 Watch', launch: '🚀 Launch' };
   var KIND_TONE = { whale: 'good', bigsell: 'bad', watch: '', launch: '' };
   var knownSrv = new Set(), srvFirst = true;
@@ -3236,8 +3290,8 @@ loop();
       }
     });
   }
-  render();
-  setInterval(render, 60000);
+  render(); syncLabels();
+  setInterval(function () { render(); syncLabels(); }, 60000);
 })();
 </script>
 </body>
