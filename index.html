@@ -196,6 +196,7 @@ a { color: inherit; }
 @media (prefers-reduced-motion: reduce) { .alert-card.launch.glow { animation: none; } }
 @media (prefers-reduced-motion: reduce) { .alert-card.shake { animation: none; } }
 .alert-card .ic { grid-row: 1 / span 4; width: 48px; height: 48px; border-radius: 10px; object-fit: cover; background: var(--panel-2); border: 1px solid var(--line); }
+.alert-card span.ic { display: grid; place-items: center; font-size: 22px; }
 .alert-card .sym { font-size: 17px; font-weight: 800; line-height: 1.15; display: flex; align-items: center; gap: 6px; }
 .alert-card.bad .sym { color: var(--sell); }
 .alert-card .ttl { font-size: 13.5px; font-weight: 700; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
@@ -305,7 +306,8 @@ tbody tr.launch-new td { animation: lglow var(--lg, 2.4s) ease-out both; animati
 .lrow .lic { width: 36px; height: 36px; border-radius: 50%; flex: none; display: grid; place-items: center; object-fit: cover;
   background: var(--panel-2); border: 1px solid var(--launch); color: var(--launch-ink); font-size: 16px; }
 .lrow .ltx { min-width: 0; line-height: 1.55; white-space: normal; }
-.lrow .who { font-family: var(--font-data); font-size: 12.5px; color: var(--launch-ink); }
+.lrow .who { font-family: var(--font-data); font-size: 12.5px; color: var(--launch-ink); text-decoration: none; }
+.lrow .who:hover { text-decoration: underline; }
 .lrow .who b { font-family: var(--font-ui); }
 .lrow .sym2 { font-weight: 700; }
 .lrow .l1 { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; row-gap: 2px; min-width: 0; }
@@ -1527,7 +1529,7 @@ function launchRowHtml(t) {
   let who = '';
   if (t.creator) {
     const lbl = labels[t.creator];
-    who = `<span class="who" title="${esc(t.creator)}">${isW ? '★ ' : ''}${lbl ? `<b>${esc(lbl)}</b> (${esc(shortAcct(t.creator))})` : esc(shortAcct(t.creator))}</span> `;
+    who = `<a class="who" href="https://pikespeak.ai/account/${esc(t.creator)}" target="_blank" rel="noopener" title="${esc(t.creator)} — open on PikeSpeak">${isW ? '★ ' : ''}${lbl ? `<b>${esc(lbl)}</b> (${esc(shortAcct(t.creator))})` : esc(shortAcct(t.creator))}</a> `;
   }
   const what = `<span class="sym2">$${esc(sym)}</span>`;
   const tx = taxes.get(t.token);
@@ -2119,15 +2121,15 @@ function mapIntear(o) {
   if (pin) out.push(mk('sell', pin, o.token_in, o.amount_in, o.token_out, o.amount_out, pout ? ':s' : ''));
   return out;
 }
-function intearRows(rows, cols) {
+function intearRows(rows, cols, past) {
   if (!rows || !rows.length) return;
   const list = [];
   for (const r of rows) {
     const o = {}; cols.forEach((c, i) => { o[c] = r[i]; });
     if (o.id != null && (I.latestId == null || Number(o.id) > Number(I.latestId))) I.latestId = o.id;
-    for (const t of mapIntear(o)) list.push(t);
+    for (const t of mapIntear(o)) { if (past) t.seenAt = t.ts; list.push(t); }
   }
-  if (list.length) addTrades(list);
+  if (list.length) addTrades(list, false, past ? { past: true } : undefined);
 }
 // open a socket and subscribe; once subscribed it replaces the previous socket (overlap = no gap)
 function intearConnect(resume) {
@@ -2339,7 +2341,7 @@ function launchAlertQuiet(l) {
 function launchAlertHtml(a) {
   const m = meta.get(a.token);
   const sym = (m && !m.failed && m.symbol) || a.sym || a.token.split('.')[0].replace(/-[0-9a-f]{6}$/, '').toUpperCase();
-  const icon = m && m.icon ? `<img class="ic" src="${esc(m.icon)}" alt="">` : '<span class="ic"></span>';
+  const icon = m && m.icon ? `<img class="ic" src="${esc(m.icon)}" alt="">` : '<span class="ic">🚀</span>';
   const p = CFG.PADS.find(x => x.id === a.pad) || { name: a.pad, page: '' };
   const logo = padLogoSrc(a.pad);
   const pill = `<a class="padpill ${esc(a.pad)}" href="${p.page}${encodeURIComponent(a.token)}" target="_blank" rel="noopener" title="Open ${esc(sym)} on ${esc(p.name)}">${logo ? `<img src="${esc(logo)}" alt="" data-padlogo="${esc(a.pad)}">` : ''}${esc(p.name)}</a>`;
@@ -2396,7 +2398,7 @@ function alertHtml(a) {
   if (a.kind === 'launch') return launchAlertHtml(a);
   const m = a.token ? meta.get(a.token) : null;
   const sym = a.symbol || (m && m.symbol) || (a.token ? a.token.split('.')[0].replace(/-[0-9a-f]{6}$/, '').toUpperCase() : 'Alert');
-  const icon = m && m.icon ? `<img class="ic" src="${esc(m.icon)}" alt="">` : '<span class="ic"></span>';
+  const icon = m && m.icon ? `<img class="ic" src="${esc(m.icon)}" alt="">` : '<span class="ic">' + (a.kind === 'srv' ? esc((a.symbol || '🤖').split(' ')[0]) : '') + '</span>';
   const isNew = unreadAlerts.has(a.id);
   const since = shakeFrom.has(a.id) ? Date.now() - shakeFrom.get(a.id) : Infinity;
   const shake = since < 3000 ? ` shake" style="animation-delay:-${since}ms` : '';
@@ -3191,7 +3193,7 @@ loop();
   }
   jget('trades.json').then(function (d) {
     if (d && d.rows && d.columns && typeof intearRows === 'function') {
-      try { intearRows(d.rows, d.columns); } catch (e) { /* live feed still covers us */ }
+      try { intearRows(d.rows, d.columns, true); } catch (e) { /* live feed still covers us */ }
     }
   });
   var elWatch = document.getElementById('srv-watch');
@@ -3256,6 +3258,11 @@ loop();
   }
   var KIND_LABEL = { whale: '🐋 Whale', bigsell: '⚠️ Big sell', watch: '👀 Watch', launch: '🚀 Launch' };
   var KIND_TONE = { whale: 'good', bigsell: 'bad', watch: '', launch: '' };
+  function srvTextToken(a) { // bot records before this fix have no token field; launch texts carry the contract on the last line
+    if (!a || a.kind !== 'launch' || !a.text) return null;
+    var last = a.text.split('\n').pop().trim();
+    return /^[a-z0-9._-]+\.near$/.test(last) ? last : null;
+  }
   var knownSrv = new Set(), srvFirst = true;
   function render() {
     Promise.all([jget('alerts.json'), jget('watchlist.json')]).then(function (res) {
@@ -3269,6 +3276,7 @@ loop();
       if (alerts) {
         var mapped = alerts.map(function (a, i) {
           return { id: 'S:' + a.ts + ':' + i, kind: 'srv', srvKind: a.kind, at: a.ts, title: a.text,
+                   token: a.token || srvTextToken(a),
                    tone: KIND_TONE[a.kind] || '', symbol: KIND_LABEL[a.kind] || '🤖 Bot' };
         });
         var fresh = mapped.filter(function (a) { return !knownSrv.has(a.id); });
