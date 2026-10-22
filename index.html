@@ -133,6 +133,9 @@ a { color: inherit; }
 .alerts-row { overflow-x: auto; overscroll-behavior-x: contain; scroll-snap-type: x proximity; padding-bottom: 6px; border-radius: 10px; }
 .alerts-row:focus-visible { outline: 2px solid var(--nearly); outline-offset: 2px; }
 .alerts-track { display: flex; gap: 10px; }
+.srv-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.srv-chip { font: 12px var(--font-data); color: var(--fg); background: var(--panel-2); border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; }
+.srv-empty { font-size: 12px; color: var(--faint); }
 .ticker-msg { font-size: 13px; color: var(--muted); padding: 18px 4px; }
 .ticker-msg button { all: unset; cursor: pointer; color: var(--nearly); text-decoration: underline; }
 .alert-card { all: unset; box-sizing: border-box; cursor: pointer; flex: none; width: 300px; scroll-snap-align: start;
@@ -592,7 +595,7 @@ td.amt .sub { font-weight: 400; }
 
   <section class="alerts" id="ticker" aria-label="Alerts">
     <div class="alerts-head">
-      <h2>Alerts <span class="alerts-src">launches + RAEN · latest 10</span></h2>
+      <h2>Alerts <span class="alerts-src">launches + RAEN + bot · latest 10</span></h2>
       <span class="alerts-note" id="alerts-keynote" hidden></span>
       <span class="alerts-count" id="alerts-count"></span>
       <button type="button" class="btn" id="alerts-clear">Clear all</button>
@@ -600,6 +603,7 @@ td.amt .sub { font-weight: 400; }
     <div class="alerts-row" id="ticker-viewport" tabindex="0">
       <div class="alerts-track" id="ticker-track"><span class="ticker-msg">Loading alerts…</span></div>
     </div>
+    <div class="srv-chips" id="srv-watch" style="margin-top:8px" hidden></div>
   </section>
 
   <div id="errbox" class="errbox" hidden></div>
@@ -2284,12 +2288,13 @@ function loop() { intearLoop(); chainLoop(); gapLoop(); launchPollLoop(); alerts
 // ---------- RAEN alerts ticker ----------
 // GET /alerts (last 24h). Field names are read defensively because RAEN doesn't publish the schema.
 let alerts = [], alertsSig = '', alertsFirstLoad = true;
+let serverAlerts = []; // tape-bot alerts fed in from the VPS snapshot (proxy-mode only; stays empty on GitHub Pages)
 // launch alerts come from the dashboard's own launch detection (chain + Intear), not from RAEN; kept 24 h
 let launchAlerts = (store.get('tape.launchAlerts', []) || []).filter(a => a && a.token).slice(0, 20);
 function saveLaunchAlerts() { store.set('tape.launchAlerts', launchAlerts.map(a => ({ id: a.id, kind: 'launch', token: a.token, pad: a.pad, creator: a.creator, sym: a.sym, at: a.at, watched: a.watched }))); }
 // the 10 newest alerts that haven't been cleared; older ones drop off as new ones arrive
 function allAlerts() {
-  return launchAlerts.concat(alerts).filter(a => !dismissed.has(a.id)).sort((a, b) => (b.at || 0) - (a.at || 0)).slice(0, CFG.ALERT_MAX);
+  return launchAlerts.concat(serverAlerts, alerts).filter(a => !dismissed.has(a.id)).sort((a, b) => (b.at || 0) - (a.at || 0)).slice(0, CFG.ALERT_MAX);
 }
 // when a card is pushed out of the 10, it stops counting on the bell
 let alertsShownIds = '';
@@ -2416,7 +2421,7 @@ function renderTicker(msgHtml) {
   row.scrollLeft = keep;
 }
 $('alerts-clear').onclick = () => {
-  for (const a of launchAlerts.concat(alerts)) dismissed.add(a.id); // everything, not only the 10 on screen
+  for (const a of launchAlerts.concat(serverAlerts, alerts)) dismissed.add(a.id); // everything, not only the 10 on screen
   store.set('tape.dismissedAlerts', [...dismissed].slice(-500));
   unreadAlerts.clear(); alertsSig = ''; renderTicker(); updateBell();
 };
@@ -3168,6 +3173,72 @@ updateTear(); setTimeout(updateTear, 3000); setInterval(updateTear, 10000);
 setInterval(loadNearUsd, 60e3);
 setInterval(loadRefPrices, 120e3);
 loop();
+</script>
+<script>
+// Server data (VPS proxy-mode only; a no-op on GitHub Pages): the tape-bot on
+// the server publishes trades.json / alerts.json / watchlist.json under the
+// secret proxy path. Backfill the tape instantly, feed the bot's alerts into
+// the Alerts ticker (a watched wallet buying triggers the usual watch sound),
+// and show the bot's watched wallets as chips under the ticker.
+(function () {
+  if (!PROXY_MODE) return;
+  var base = PXB + '/data/';
+  function jget(n) {
+    return fetch(base + n, { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .catch(function () { return null; });
+  }
+  jget('trades.json').then(function (d) {
+    if (d && d.rows && d.columns && typeof intearRows === 'function') {
+      try { intearRows(d.rows, d.columns); } catch (e) { /* live feed still covers us */ }
+    }
+  });
+  var elWatch = document.getElementById('srv-watch');
+  if (!elWatch) return;
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  var KIND_LABEL = { whale: '🐋 Whale', bigsell: '⚠️ Big sell', watch: '👀 Watch', launch: '🚀 Launch' };
+  var KIND_TONE = { whale: 'good', bigsell: 'bad', watch: '', launch: '' };
+  var knownSrv = new Set(), srvFirst = true;
+  function render() {
+    Promise.all([jget('alerts.json'), jget('watchlist.json')]).then(function (res) {
+      var alerts = res[0], watch = res[1];
+      if (watch) {
+        elWatch.hidden = false;
+        elWatch.innerHTML = '<span class="srv-empty">👀 Bot watch:</span>' + (watch.length
+          ? watch.map(function (w) { return '<span class="srv-chip">' + esc(w) + '</span>'; }).join('')
+          : '<span class="srv-empty">chưa theo dõi ví nào — thêm bằng lệnh /watch trong Telegram.</span>');
+      }
+      if (alerts) {
+        var mapped = alerts.map(function (a, i) {
+          return { id: 'S:' + a.ts + ':' + i, kind: 'srv', srvKind: a.kind, at: a.ts, title: a.text,
+                   tone: KIND_TONE[a.kind] || '', symbol: KIND_LABEL[a.kind] || '🤖 Bot' };
+        });
+        var fresh = mapped.filter(function (a) { return !knownSrv.has(a.id); });
+        mapped.forEach(function (a) { knownSrv.add(a.id); });
+        serverAlerts = mapped;
+        if (!srvFirst && fresh.length) {
+          var now = Date.now();
+          fresh.forEach(function (a) {
+            unreadAlerts.add(a.id); shakeFrom.set(a.id, now);
+            // a watched wallet buying gets the dashboard's own watch treatment (bell + repeating shots sound)
+            if (a.srvKind === 'watch' && /MUA/.test(a.title)) {
+              try { onWatchedTrades([{ id: a.id, kind: 'watch' }]); } catch (e) {}
+            }
+          });
+          setTimeout(function () { alertsSig = ''; renderTicker(); }, 3100); // stop the shake after 3 s
+        }
+        srvFirst = false;
+        alertsSig = ''; renderTicker(); updateBell();
+      }
+    });
+  }
+  render();
+  setInterval(render, 60000);
+})();
 </script>
 </body>
 </html>
