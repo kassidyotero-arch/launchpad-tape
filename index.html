@@ -295,7 +295,7 @@ tbody tr.sell:hover td { background: var(--sell-hover); }
 tr.buy .meter i { background: var(--buy); } tr.sell .meter i { background: var(--sell); }
 tbody tr.whale.buy td.side-stripe { box-shadow: inset 6px 0 0 var(--buy); }
 tbody tr.whale.sell td.side-stripe { box-shadow: inset 6px 0 0 var(--sell); }
-tr.buy /* new launches: full-width purple row; glows once on arrival */
+/* new launches: full-width purple row; glows once on arrival */
 tbody tr.launch td { background: var(--launch-soft); }
 tbody tr.launch:hover td { background: var(--launch-strong); }
 tbody tr.launch td.side-stripe { box-shadow: inset 4px 0 0 var(--launch); }
@@ -543,7 +543,6 @@ td.amt .sub { font-weight: 400; }
       <span data-chain>block <strong id="st-height">—</strong></span>
       <span data-chain><strong id="st-lag">—</strong> behind</span>
       <span data-chain><strong id="st-rate">—</strong> blk/s</span>
-      <span data-raen hidden>updated <strong id="st-upd">—</strong> ago</span>
       <span>NEAR <strong id="st-near">—</strong></span>
       <span id="st-req-wrap"><strong id="st-req">0</strong> req/min</span>
       <span data-chain>blocks <strong id="st-chainmode">…</strong></span>
@@ -707,9 +706,9 @@ td.amt .sub { font-weight: 400; }
     <div>Real-time only: the tape starts at the newest block when the page opens and never loads past transactions. After a pause or a dropped connection it jumps to the newest block instead of catching up.</div>
     <div>Detection: a trade is any successful Rhea swap where one side is a token under <code>*.nearlytrade.near</code> (Nearly) or <code>*.launchpad.justhoot.near</code> / <code>*.v2-launchpad.justhoot.near</code> (JustHoot, including tokens still on their bonding stage). Market cap = trade price × <code>ft_total_supply</code> at the time the token was first seen.</div>
     <div>NEAR value is exact when the swap touches wNEAR; marked <span class="est">est</span> when it was priced through another token. USD uses the NEAR price when the trade arrived.</div>
-    <div>Fastest mode races all feeds at once: Intear, the on-chain decoder (reading blocks before finality when the block service allows it) and RAEN. The first to see a trade shows it; Settings shows which feed is winning.</div>
-    <div>Main feed: <b>Intear</b> (api.intea.rs, free, no key) pushes every trade on tokens under <code>nearlytrade.near</code> and both JustHoot launchpads (<code>launchpad.justhoot.near</code>, <code>v2-launchpad.justhoot.near</code>) as soon as its block lands. Fastest mode adds RAEN when you have a key; on-chain decoding takes over automatically if Intear drops.</div>
-    <div>Sources: <b>Fastest</b> (default) runs the on-chain feed and RAEN together and shows whichever sees a trade first; the copy from the other feed is merged, not shown twice. Hover an age to see which feed caught it and how many seconds after the trade it appeared. <b>RAEN</b> polls RAEN's decoded <code>/trades</code> feed every second (slowing down automatically if RAEN asks) with your key, which is kept only in this browser. <b>On-chain</b> decodes NEAR blocks yourself with no key; it only sees trades routed through Rhea. If RAEN refuses the key or is unreachable, the tape switches to on-chain automatically. Either way it starts at “now” and never shows past trades.</div>
+    <div>Fastest mode races all feeds at once: Intear, the on-chain decoder (reading blocks before finality when the block service allows it). The first to see a trade shows it; Settings shows which feed is winning.</div>
+    <div>Main feed: <b>Intear</b> (api.intea.rs, free, no key) pushes every trade on tokens under <code>nearlytrade.near</code> and both JustHoot launchpads (<code>launchpad.justhoot.near</code>, <code>v2-launchpad.justhoot.near</code>) as soon as its block lands. Fastest mode adds the on-chain decoder racing alongside Intear; it takes over automatically if Intear drops.</div>
+    <div>Sources: <b>Fastest</b> (default) runs Intear and the on-chain feed together and shows whichever sees a trade first; the copy from the other feed is merged, not shown twice. Hover an age to see which feed caught it and how many seconds after the trade it appeared. <b>On-chain</b> decodes NEAR blocks yourself with no key; it only sees trades routed through Rhea. If Intear is unreachable, the tape switches to on-chain automatically. <b>RAEN</b> (optional, with your key, which is kept only in this browser) only supplies extra alerts in the Alerts bar; it does not feed trades. Either way it starts at “now” and never shows past trades.</div>
     <div>Free-tier friendly on-chain mode: one request per block (about 100 a minute, under neardata's 180/min limit), each held open by the server until the block is final, and blocks without a launchpad token are skipped without being parsed.</div>
     <div>Data: blocks from mainnet.neardata.xyz (FastNEAR), token info from NEAR RPC, NEAR/USD from Binance with CoinGecko fallback, other token prices from the Rhea indexer. Transaction and wallet links open on Pikespeak. Click a token or wallet to filter by it; ✎ adds a private label to a wallet.</div>
   </footer>
@@ -760,9 +759,7 @@ const CFG = {
   INTEAR_IDLE_MS: 20000,   // the server pings every 15 s; silence this long means the socket is dead
   INTEAR_GRACE_MS: 4000,   // how long a dropped Intear feed may reconnect before on-chain decoding steps in
   ALERTS_POLL_MS: 5000, // RAEN alerts refresh (slower, to stay under RAEN's limit); backs off further on errors
-  RAEN_MAX_POLL_MS: 15000, // trades: slowest RAEN poll while it keeps failing (it never stops)
   ALERTS_MAX_POLL_MS: 30000,
-  RAEN_POLL_MS: 1000, // fastest RAEN poll; doubles automatically if RAEN answers 429
   MAX_TRADES: 3000,
   MAX_ROWS: 400,
   MAX_LAG_MS: 8000,
@@ -899,8 +896,17 @@ function parseBlock(blk) {
       const hops = extractHops(logs); if (!hops.length) continue;
       const act = reo.receipt && reo.receipt.receipt && reo.receipt.receipt.Action;
       const signer = (act && act.signer_id) || (reo.receipt && reo.receipt.predecessor_id) || '?';
-      const wrapHop = hops.find(x => x.tin === W || x.tout === W);
-      const wrapAmt = wrapHop ? (wrapHop.tin === W ? wrapHop.ain : wrapHop.aout) : null;
+      const wrapHops = hops.filter(x => x.tin === W || x.tout === W);
+      const lpCount = hops.reduce((n, x) => n + (padOf(x.tin) || padOf(x.tout) ? 1 : 0), 0);
+      // one shared wrap amount is only safe when the whole receipt has a single wrap hop and a
+      // single launchpad hop; with several swaps in one receipt (aggregator splits), each
+      // launchpad hop must chain onto its own wrap hop — unmatched hops stay 'est' instead of
+      // borrowing another swap's NEAR amount.
+      const wrapAmt = wrapHops.length === 1 && lpCount <= 1 ? (wrapHops[0].tin === W ? wrapHops[0].ain : wrapHops[0].aout) : null;
+      const routeAmt = hp => {
+        for (const wh of wrapHops) if (wh.tout === hp.tin || wh.tin === hp.tout) return wh.tin === W ? wh.ain : wh.aout;
+        return wrapAmt;
+      };
       hops.forEach((hp, i) => {
         for (const side of ['buy', 'sell']) {
           const token = side === 'buy' ? hp.tout : hp.tin;
@@ -908,10 +914,10 @@ function parseBlock(blk) {
           const counter = side === 'buy' ? hp.tin : hp.tout;
           let nearRaw = null, via = 'est';
           if (counter === W) { nearRaw = side === 'buy' ? hp.ain : hp.aout; via = 'direct'; }
-          else if (wrapAmt) { nearRaw = wrapAmt; via = 'route'; }
+          else { const ra = routeAmt(hp); if (ra) { nearRaw = ra; via = 'route'; } }
           out.push({
             id: (ex.id || reo.tx_hash || h) + ':' + i + ':' + side,
-            ts, h, tx: reo.tx_hash || null, pad: pad.id, token, side,
+            ts, h, tx: reo.tx_hash || null, receipt: ex.id || null, pad: pad.id, token, side,
             trader: hp.who && !ROUTERS.has(hp.who) ? hp.who : signer,
             tokenRaw: side === 'buy' ? hp.aout : hp.ain,
             counter, counterRaw: side === 'buy' ? hp.ain : hp.aout,
@@ -1365,18 +1371,6 @@ function derive(t) {
     const capUsd = usd != null && tok && supply != null ? usd / tok * supply : (cap != null && rate ? cap * rate : null);
     return { m, tok, near, usd, price, cap, capUsd, est };
   }
-  if (t.src === 'raen') {
-    // RAEN already gives human-readable NEAR, token and USD amounts.
-    const tok = t.tokens;
-    let near = t.near, est = false;
-    if (near == null && t.usd != null && rate) { near = t.usd / rate; est = true; }
-    const usd = t.usd != null ? t.usd : (near != null && rate ? near * rate : null);
-    const price = near != null && tok ? near / tok : null;
-    const cap = price != null && supply != null ? price * supply : null;
-    const usdPerNear = usd != null && near ? usd / near : rate;
-    const capUsd = cap != null && usdPerNear ? cap * usdPerNear : null;
-    return { m, tok, near, usd, price, cap, capUsd, est };
-  }
   const tok = dec != null ? Number(t.tokenRaw) / Math.pow(10, dec) : null;
   const near = t.nearRaw != null ? Number(t.nearRaw) / 1e24 : counterNear(t);
   let nearV = near, estV = t.via === 'est' && near != null;
@@ -1429,26 +1423,34 @@ function shortAcct(a) {
 }
 
 // ---------- filtering ----------
+// the filter inputs, normalized once per render instead of once per row
+let NF = null;
+function normFilters() {
+  NF = { q: F.q.trim().toLowerCase(), w: F.wallet.trim().toLowerCase(),
+    aMin: parseFloat(F.amtMin), aMax: parseFloat(F.amtMax), cMin: parseFloat(F.capMin), cMax: parseFloat(F.capMax) };
+}
 function passes(t, d) {
+  if (!NF) normFilters();
   if (!F.pads[t.pad]) return false;
   if (F.side !== 'all' && t.side !== F.side) return false;
-  const q = F.q.trim().toLowerCase();
+  const q = NF.q;
   if (q) {
-    const hay = (t.token + ' ' + (d.m ? (d.m.name || '') + ' ' + (d.m.symbol || '') : '')).toLowerCase();
-    if (hay.indexOf(q) === -1) return false;
+    if (t._hayM !== d.m) { t._hayM = d.m; t._hay = (t.token + ' ' + (d.m ? (d.m.name || '') + ' ' + (d.m.symbol || '') : '')).toLowerCase(); }
+    if (t._hay.indexOf(q) === -1) return false;
   }
-  const w = F.wallet.trim().toLowerCase();
+  const w = NF.w;
   if (w) {
-    const hay = (t.trader + ' ' + (labels[t.trader] || '')).toLowerCase();
-    if (hay.indexOf(w) === -1) return false;
+    const lbl = labels[t.trader] || '';
+    if (t._hayWL !== lbl) { t._hayWL = lbl; t._hayW = (t.trader + ' ' + lbl).toLowerCase(); }
+    if (t._hayW.indexOf(w) === -1) return false;
   }
   const amt = F.amtUnit === 'usd' ? d.usd : d.near;
-  const aMin = parseFloat(F.amtMin), aMax = parseFloat(F.amtMax);
+  const aMin = NF.aMin, aMax = NF.aMax;
   if ((!isNaN(aMin) || !isNaN(aMax)) && amt == null) return false;
   if (!isNaN(aMin) && amt < aMin) return false;
   if (!isNaN(aMax) && amt > aMax) return false;
   const cap = F.capUnit === 'usd' ? d.capUsd : d.cap;
-  const cMin = parseFloat(F.capMin), cMax = parseFloat(F.capMax);
+  const cMin = NF.cMin, cMax = NF.cMax;
   if ((!isNaN(cMin) || !isNaN(cMax)) && cap == null) return false;
   if (!isNaN(cMin) && cap < cMin) return false;
   if (!isNaN(cMax) && cap > cMax) return false;
@@ -1457,14 +1459,23 @@ function passes(t, d) {
 
 // ---------- rendering ----------
 const $ = id => document.getElementById(id);
-let renderQueued = false;
-// redraw at most ~6 times a second: bursts of trades are batched into one table update
+let renderQueued = false, renderTimer = null, renderUrgent = false, lastRenderUrgent = false;
+// redraw at most ~6 times a second: bursts of trades are batched into one table update.
+// urgent (a fresh trade or launch) skips the wait — unless the previous render was itself
+// urgent, i.e. a trade storm is already being batched at full rate.
 let lastRenderAt = 0;
-function scheduleRender() {
-  if (renderQueued) return; renderQueued = true;
-  const wait = Math.max(0, lastRenderAt + 160 - Date.now());
-  const go = () => requestAnimationFrame(() => { renderQueued = false; lastRenderAt = Date.now(); render(); });
-  if (wait) setTimeout(go, wait); else go();
+function scheduleRender(urgent) {
+  if (urgent) renderUrgent = true;
+  if (renderQueued) {
+    if (renderUrgent && !lastRenderUrgent && renderTimer) { clearTimeout(renderTimer); renderTimer = null; fireRender(); }
+    return;
+  }
+  renderQueued = true;
+  const wait = renderUrgent && !lastRenderUrgent ? 0 : Math.max(0, lastRenderAt + 160 - Date.now());
+  if (wait) renderTimer = setTimeout(() => { renderTimer = null; fireRender(); }, wait); else fireRender();
+}
+function fireRender() {
+  requestAnimationFrame(() => { renderQueued = false; lastRenderAt = Date.now(); lastRenderUrgent = renderUrgent; renderUrgent = false; render(); });
 }
 
 // ---------- launchpad logos ----------
@@ -1568,7 +1579,7 @@ function rowHtml(t, d) {
   const liveMs = isW && t.watchedAt ? Date.now() - t.watchedAt : Infinity;
   const live = liveMs < CFG.WATCH_FLASH_MS;
   return `<tr class="${t.side}${isWhale ? ' whale' : ''}${isW ? ' watched' : ''}${live ? ' watch-live' : ''}${freshIds.has(t.id) && !live ? ' fresh' : ''}"${live ? ` style="--wd:-${Math.round(liveMs)}ms"` : ''}>
-    <td class="time side-stripe" data-ts="${t.ts}" title="${fmtTime(t.ts)} · ${t.src === 'raen' ? 'via RAEN' : 'on-chain, block ' + t.h} · shown ${Math.max(0, (t.seenAt - t.ts) / 1000).toFixed(1)}s after the trade">${fmtAgo(t.ts)}</td>
+    <td class="time side-stripe" data-ts="${t.ts}" title="${fmtTime(t.ts)} · ${'on-chain, block ' + t.h} · shown ${Math.max(0, (t.seenAt - t.ts) / 1000).toFixed(1)}s after the trade">${fmtAgo(t.ts)}</td>
     <td><a class="side ${t.side} swap" href="${CFG.SWAP_URL}${encodeURIComponent(t.token)}" target="_blank" rel="noopener" title="Open ${esc(t.token)} in the Intear swap terminal">${t.side}<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 2.5h4.5V7"/><path d="M13.5 2.5 7 9"/></svg></a>${taxLineHtml(t.token)}</td>
     <td><div class="tok">${icon}<div class="names"><div class="line1"><button class="sym${F.q === t.token ? ' on' : ''}" type="button" data-token="${esc(t.token)}" title="${F.q === t.token ? 'Click again to clear this filter' : 'Filter by this token'}">${esc(sym)}</button>${isW ? `<span class="watch-tag" title="Watched wallet${labels[t.trader] ? ': ' + esc(labels[t.trader]) : ''}">★ WATCHED</span>` : ''}${isWhale ? `<span class="whale-tag">$${CFG.WHALE_USD >= 1000 ? (CFG.WHALE_USD / 1000) + 'K' : CFG.WHALE_USD}+</span>` : ''}${name ? `<small>${esc(name)}</small>` : ''}${socialsHtml(t.token)}<a class="xsearch" href="${xSearchUrl(t.token)}" target="_blank" rel="noopener" title="Search X for ${esc(t.token)} (latest posts)" aria-label="Search X for ${esc(t.token)}">${SEARCH_ICON}</a></div><div class="ca"><code title="${esc(t.token)}">${esc(t.token)}</code><button class="copy${Date.now() - (copiedAt.get(t.token) || 0) < 1500 ? ' done' : ''}" type="button" data-copy="${esc(t.token)}" title="Copy contract" aria-label="Copy contract ${esc(t.token)}">${Date.now() - (copiedAt.get(t.token) || 0) < 1500 ? CHECK_ICON : COPY_ICON}</button>${padPageLink(t)}</div><div class="mc">MC <b>${capCell}</b></div></div></div></td>
     <td class="num r amt"><span class="u">${fmtUsd(d.usd)}</span><span class="sub">${d.near != null ? fmtNum(d.near, 2) + ' Ⓝ' : '—'}${d.est ? '<span class="est" title="Estimated">est</span>' : ''}</span>${usdV != null ? `<span class="meter" title="Order size"><i style="width:${meterW.toFixed(1)}%"></i></span>` : ''}</td>
@@ -1577,14 +1588,35 @@ function rowHtml(t, d) {
   </tr>`;
 }
 
+// Row DOM nodes are kept and reused across renders, keyed by trade id: a burst of new
+// trades inserts only the new nodes instead of re-parsing the whole table — cheaper, and
+// a click aimed at a row can no longer be lost to a rebuild happening under the cursor.
+// (Row buttons are handled by one delegated document click handler, so nodes need no wiring.)
+const rowNodes = new Map();
+const rowTpl = document.createElement('template');
+function rowEl(html) { rowTpl.innerHTML = html; return rowTpl.content.firstElementChild; }
 function render() {
-  const rows = [];
-  let shown = 0, matched = 0;
+  normFilters();
+  const tb = $('rows');
+  const keep = new Set();
+  let prev = null, shown = 0, matched = 0;
+  const place = (t, html) => {
+    let el = rowNodes.get(t.id);
+    if (!el || el._h !== html) {
+      const nt = rowEl(html); nt._h = html;
+      if (el) el.replaceWith(nt);
+      el = nt; rowNodes.set(t.id, el);
+    }
+    keep.add(t.id);
+    if (prev) { if (el.parentNode !== tb || el.previousSibling !== prev) tb.insertBefore(el, prev.nextSibling); }
+    else if (el.parentNode !== tb || tb.firstChild !== el) tb.insertBefore(el, tb.firstChild);
+    prev = el; shown++;
+  };
   for (const t of trades) {
     if (t.kind === 'launch') {
       if (!passesLaunch(t)) continue;
       matched++;
-      if (shown < CFG.MAX_ROWS) { rows.push(launchRowHtml(t)); shown++; }
+      if (shown < CFG.MAX_ROWS) place(t, launchRowHtml(t));
       continue;
     }
     const d = derive(t);
@@ -1596,18 +1628,17 @@ function render() {
       const m = d.m;
       const key = [m ? m.at : 0, m && m.failed ? 1 : 0, d.usd, d.near, d.capUsd, F.q === t.token, F.wallet === t.trader,
         labels[t.trader] || '', freshIds.has(t.id), Date.now() - (copiedAt.get(t.token) || 0) < 1500, logoIdx[t.pad],
-        isWatched(t.trader), taxKey(t.token), socialsKey(t.token)].join('|');
+        isWatched(t.trader), taxKey(t.token), socialsKey(t.token), t.tx ? 1 : 0].join('|');
       const animating = t.watchedAt && Date.now() - t.watchedAt < CFG.WATCH_FLASH_MS;
       if (t._k !== key || animating || t._wasLive) { t._k = key; t._html = rowHtml(t, d); t._wasLive = animating; }
-      rows.push(t._html); shown++;
+      place(t, t._html);
     }
   }
-  $('rows').innerHTML = rows.join('');
-  $('empty').hidden = rows.length > 0;
-  if (!rows.length && trades.length) $('empty-msg').textContent = `${trades.length} trades captured, none match the current filters.`;
+  for (const [id, el] of rowNodes) if (!keep.has(id)) { el.remove(); rowNodes.delete(id); }
+  $('empty').hidden = shown > 0;
+  if (!shown && trades.length) $('empty-msg').textContent = `${trades.length} trades captured, none match the current filters.`;
   $('f-count').textContent = matched > shown ? `showing ${shown} of ${matched}` : `${matched} trade${matched === 1 ? '' : 's'}`;
   freshIds = new Set();
-
 }
 
 // ---------- ingest ----------
@@ -1642,7 +1673,7 @@ function addLaunch(l, watchHits, past) {
 }
 
 // In Fastest mode the same swap can arrive from both feeds; the first one wins, the second only fills gaps.
-function nearOf(t) { return (t.src === 'raen' || t.src === 'intear') ? t.near : (t.nearRaw != null ? Number(t.nearRaw) / 1e24 : null); }
+function nearOf(t) { return t.src === 'intear' ? t.near : (t.nearRaw != null ? Number(t.nearRaw) / 1e24 : null); }
 function tokensOf(t) {
   if (t.tokens != null) return t.tokens;
   if (t.tokenRaw == null) return null;
@@ -1651,7 +1682,7 @@ function tokensOf(t) {
 }
 const close = (a, b, rel) => a != null && b != null && Math.abs(a - b) <= Math.max(1e-6, Math.max(Math.abs(a), Math.abs(b)) * rel);
 // The same swap reported by two feeds. With transaction ids on both sides they must be equal; otherwise
-// (RAEN's Nearly trades carry no tx) match on wallet + token + side + time + size. Feeds round amounts
+// (some on-chain receipts carry no tx) match on wallet + token + side + time + size. Feeds round amounts
 // differently and some count the trade tax in, others not, so sizes only need to be close. Each feed can
 // confirm a row once, so a bot repeating identical buys still gets one row per buy.
 function findTwin(t) {
@@ -1664,6 +1695,7 @@ function findTwin(t) {
     if ((o.src || 'chain') === (t.src || 'chain')) continue;
     if (o.seen && o.seen[t.src || 'chain'] != null) continue; // this feed already reported that trade
     if (o.token !== t.token || o.side !== t.side) continue;
+    if (o.receipt && t.receipt && o.receipt === t.receipt) return o; // same receipt = same swap, no guessing
     if (o.tx && t.tx) { if (o.tx === t.tx) return o; continue; }
     const dt = Math.abs(o.ts - t.ts);
     if (dt > 120e3) continue;
@@ -1681,7 +1713,7 @@ function findTwin(t) {
 }
 // one swap side = one row, whichever feed or load reported it
 const txKeys = new Map();
-const txKeyOf = t => t.tx ? t.tx + '|' + t.token + '|' + t.side : null;
+const txKeyOf = t => t.tx ? t.tx + '|' + t.token + '|' + t.side : (t.receipt ? 'r:' + t.receipt + '|' + t.token + '|' + t.side : null);
 // opts.past: trades loaded from before now (recent-trades fill, or saved from the last visit):
 // shown with their real age, never flash, ring or count as new
 function addTrades(list, sortAfter, opts) {
@@ -1696,14 +1728,13 @@ function addTrades(list, sortAfter, opts) {
     const srcKey = t.src || 'chain';
     const k = txKeyOf(t);
     const same = k ? txKeys.get(k) : null;
-    if (same && same !== t) { if (!same.seen) same.seen = {}; if (same.seen[srcKey] == null) same.seen[srcKey] = t.seenAt; continue; }
+    if (same && same !== t) { if (!same.seen) same.seen = {}; if (same.seen[srcKey] == null) same.seen[srcKey] = t.seenAt; if (!same.tx && t.tx) same.tx = t.tx; continue; }
     const twin = past ? null : findTwin(t);
     if (twin) {
       if (!twin.seen) twin.seen = {};
       if (twin.seen[srcKey] == null) twin.seen[srcKey] = t.seenAt;
-      if (t.src === 'raen' && twin.usdRaen == null) { twin.usdRaen = t.usd; if (!twin.tx && t.tx) twin.tx = t.tx; }
-      if (twin.src === 'raen' && !twin.tx && t.tx) twin.tx = t.tx;
-      if (t.src === 'intear' && twin.usdRaen == null && twin.src !== 'raen' && t.usd != null) twin.usdRaen = t.usd;
+      if (!twin.tx && t.tx) twin.tx = t.tx; // a chain-first row can carry no tx (cross-shard receipt); the confirming copy fills it in so the row gets its tx link
+      if (t.src === 'intear' && twin.usdRaen == null && t.usd != null) twin.usdRaen = t.usd;
       continue;
     }
     if (!past || t.usdRate == null) t.usdRate = nearUsd || null;
@@ -1720,7 +1751,7 @@ function addTrades(list, sortAfter, opts) {
   if (trades.length > CFG.MAX_TRADES) { for (const t of trades.splice(CFG.MAX_TRADES)) { seenIds.delete(t.id); const k = txKeyOf(t); if (k && txKeys.get(k) === t) txKeys.delete(k); if (t.kind === 'launch') launches.delete(t.token); } }
   saveRecentSoon();
   if (seenIds.size > 60000) { seenIds.clear(); for (const t of trades) seenIds.add(t.id); } // long sessions stay light
-  scheduleRender();
+  scheduleRender(!past);
 }
 
 // ---------- block stream ----------
@@ -1784,65 +1815,20 @@ function setState(kind, text) {
 }
 function showError(msg) { const e = $('errbox'); if (!msg) { e.hidden = true; return; } e.hidden = false; e.textContent = msg; }
 
-// ---------- RAEN source ----------
-// GET /trades returns the newest Nearly + Hoot swaps already decoded. CORS allows browsers (any origin,
-// Authorization header), so the page calls it directly. Real-time only: the first answer is history,
-// so we mark those trades as seen and show only trades that appear after that.
+// ---------- data sources ----------
+// Trades come from Intear and the on-chain decoder ('both' = Fastest, 'intear', 'chain').
+// RAEN is used for alerts only; it does not feed trades.
 let raenKey = store.get('tape.raenkey', '') || '';
-// 'both' = Fastest (on-chain + RAEN together), 'raen', 'chain'
-// RAEN is used for alerts only; it no longer feeds trades
 // Phones default to Intear only: reading every NEAR block costs several MB of mobile data a minute.
 // Anyone can switch to Fastest in Settings; computers start on Fastest.
 const IS_PHONE = (() => { try { return matchMedia('(pointer: coarse)').matches && Math.min(screen.width, screen.height) < 820; } catch (e) { return false; } })();
 let source = store.get('tape.source2', '') || (IS_PHONE ? 'intear' : 'both');
 if (source === 'raen') { source = 'both'; store.set('tape.source2', 'both'); }
-let raenPrimedFrom = 0;
 const pageOpenedAt = Date.now();
-let raenPrimed = false, raenFails = 0, raenDownUntil = 0, raenLastOk = 0, raenHealth = null;
-let raenPollMs = CFG.RAEN_POLL_MS, raenOkStreak = 0;
-let chainOk = false, raenOk = false;
+let chainOk = false;
 
-function mapRaen(x) {
-  if (!x || !x.token || !x.id) return null;
-  const pad = x.id.startsWith('hoot:') ? 'hoot' : x.id.startsWith('nearly:') ? 'nearly' : (padOf(x.token) || {}).id;
-  if (!pad) return null;
-  let tx = null;
-  if (pad === 'hoot') { const p = x.id.split(':')[1]; if (/^[1-9A-HJ-NP-Za-km-z]{43,44}$/.test(p)) tx = p; }
-  return {
-    id: 'raen:' + x.id, src: 'raen', ts: +x.at || Date.now(), h: null, tx, receipt: x.receipt || null,
-    pad, token: x.token, side: x.side === 'sell' ? 'sell' : 'buy', trader: x.trader || '?',
-    near: typeof x.near === 'number' ? x.near : null,
-    tokens: typeof x.tokens === 'number' ? x.tokens : null,
-    usd: typeof x.usd === 'number' ? x.usd : null,
-    counter: CFG.WNEAR,
-  };
-}
 
-async function raenTick() {
-  reqTimes.push(Date.now());
-  const r = await fetchT(CFG.RAEN + '/trades', { headers: { Authorization: 'Bearer ' + raenKey }, cache: 'no-store' }, CFG.RAEN_TIMEOUT_MS);
-  if (r.status === 401 || r.status === 403) { const e = new Error('RAEN refused the key'); e.raenAuth = true; throw e; }
-  if (r.status === 429) {
-    const ra = parseFloat(r.headers.get('Retry-After')) || 10;
-    const e = new Error('RAEN rate limit'); e.retryMs = ra * 1000; throw e;
-  }
-  if (!r.ok) throw new Error(`RAEN answered ${r.status}`);
-  const j = await r.json();
-  raenHealth = j.healthy || null;
-  const list = (j.trades || []).map(mapRaen).filter(Boolean);
-  if (!raenPrimed) {
-    // first answer after (re)starting: older trades are history, but the last few seconds are kept so a
-    // feed switched on mid-session can't miss a trade that happened during the switch
-    const cutoff = raenPrimedFrom - CFG.SWITCH_OVERLAP_MS;
-    const recent = [];
-    for (const t of list) { if (t.ts >= cutoff && pageOpenedAt < cutoff) recent.push(t); else seenIds.add(t.id); }
-    raenPrimed = true;
-    if (recent.length) addTrades(recent);
-  } else addTrades(list);
-  raenLastOk = Date.now();
-}
 
-function raenWanted() { return false; } // trades never come from RAEN (alerts only)
 function intearWanted() { return source === 'both' || source === 'intear'; }
 // Intear counts as healthy while connected, and for a short grace period while (re)connecting
 // healthy = connected AND heard from recently (the NEAR-price heartbeat arrives about every second)
@@ -1853,7 +1839,7 @@ function chainWanted() {
   if (source === 'both' && CFG.HOT_STANDBY) return true; // all feeds race; whichever sees a trade first wins
   return !intearHealthy(); // Intear mode: on-chain only steps in when Intear is down
 }
-function activeSource() { return [intearWanted() && 'intear', raenWanted() && 'raen', chainWanted() && 'chain'].filter(Boolean).join('+'); }
+function activeSource() { return [intearWanted() && 'intear', chainWanted() && 'chain'].filter(Boolean).join('+'); }
 let lastActive = null;
 
 function refreshState() {
@@ -1862,38 +1848,11 @@ function refreshState() {
   if (!running) return;
   const parts = [];
   if (intearWanted() && I.ok) parts.push('Intear');
-  if (raenWanted() && raenOk) parts.push('RAEN');
   if (chainWanted() && chainOk) parts.push('chain');
-  const down = raenWanted() && raenHealth ? Object.keys(raenHealth).filter(k => raenHealth[k] === false) : [];
   if (!parts.length) { setState('err', 'Reconnecting'); return; }
-  setState(down.length ? 'err' : 'live', 'Live · ' + parts.join(' + ') + (down.length ? ' · RAEN reports ' + down.join(', ') + ' delayed' : ''));
+  setState('live', 'Live · ' + parts.join(' + '));
 }
 
-let raenWake = null;
-const raenNap = ms => new Promise(r => { let done = false; const fin = () => { if (!done) { done = true; raenWake = null; r(); } }; raenWake = fin; sleep(ms).then(fin); });
-async function raenLoop() {
-  let wasWanted = false;
-  while (true) {
-    if (!running || !raenWanted()) { wasWanted = false; raenOk = false; refreshState(); await sleep(500); continue; }
-    if (!wasWanted) { raenPrimed = false; wasWanted = true; raenPrimedFrom = Date.now(); } // (re)start at "now"; only a few seconds of overlap
-    const started = Date.now();
-    try {
-      await raenTick();
-      raenFails = 0; raenOk = true; raenStatus.tradesErr = null; raenStatus.tradesOkAt = Date.now();
-      // adaptive speed: creep back toward the fastest interval after a run of clean answers
-      raenPollMs = CFG.RAEN_POLL_MS; // RAEN answered: back to full speed right away
-      refreshState();
-      await raenNap(Math.max(CFG.RAEN_MIN_GAP_MS, raenPollMs - (Date.now() - started))); // steady cadence, never back to back
-    } catch (e) {
-      raenFails++; raenOk = false; raenOkStreak = 0;
-      // Never stop and never show a banner: slow down step by step and keep trying; Settings shows the status.
-      raenPollMs = Math.min(CFG.RAEN_MAX_POLL_MS, Math.max(CFG.RAEN_POLL_MS, raenPollMs * 2));
-      raenStatus.tradesErr = describeRaenError(e); raenStatus.tradesErrAt = Date.now();
-      refreshState();
-      await raenNap(Math.max(e.retryMs || 0, raenPollMs));
-    }
-  }
-}
 
 let lastChainProgress = Date.now();
 // Optimistic blocks arrive ~1 s before they're final. The page checks once whether the block service holds an
@@ -2014,8 +1973,8 @@ async function chainLoop() {
       fails++; chainOk = false;
       if (e.badKey) { apiKey = ''; store.set('tape.apikey', ''); reset(); continue; }
       if (CHAIN.opt && fails >= 3) { CHAIN.opt = false; CHAIN.probedAt = Date.now(); updateChainModeUI(); } // optimistic misbehaving: use final
-      if (e.retryMs) showError(`The free neardata tier asked us to slow down. Waiting ${Math.round(e.retryMs / 1000)}s, then jumping to the newest block.`);
-      else if (fails >= 3 && !raenOk && !I.ok) showError(`Can't reach the NEAR block feed (${e.message}). Check your connection, or that your browser or network isn't blocking mainnet.neardata.xyz. Retrying automatically.`);
+      if (e.retryMs && !I.ok) showError(`The free neardata tier asked us to slow down. Waiting ${Math.round(e.retryMs / 1000)}s, then jumping to the newest block.`);
+      else if (fails >= 3 && !I.ok) showError(`Can't reach the NEAR block feed (${e.message}). Check your connection, or that your browser or network isn't blocking mainnet.neardata.xyz. Retrying automatically.`);
       refreshState();
       reset();
       await sleep(e.retryMs || Math.min(8000, 700 * fails));
@@ -2033,7 +1992,7 @@ setInterval(() => {
   }
 }, 2000);
 // Coming back online or back to this tab: restart both feeds right away instead of waiting for timeouts.
-function kickFeeds() { lastChainProgress = Date.now(); chainAbort.abort(); raenDownUntil = 0; raenWake && raenWake(); if (I.ws) { try { I.ws.close(); } catch (e) {} } }
+function kickFeeds() { lastChainProgress = Date.now(); chainAbort.abort(); if (I.ws) { try { I.ws.close(); } catch (e) {} } }
 window.addEventListener('online', kickFeeds);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && lastBlock && Date.now() - lastBlock.ts > CFG.MAX_LAG_MS) kickFeeds(); });
 // ---------- launch detection, Intear side ----------
@@ -2662,7 +2621,7 @@ async function alertsLoop() {
   }
 }
 // what went wrong, in plain words, for the note in Settings
-const raenStatus = { tradesErr: null, tradesErrAt: 0, tradesOkAt: 0, alertsErr: null, alertsErrAt: 0, alertsOkAt: 0 };
+const raenStatus = { alertsErr: null, alertsErrAt: 0, alertsOkAt: 0 };
 function describeRaenError(e) {
   if (!e) return 'unknown error';
   if (e.raenAuth || e.auth) return 'RAEN refused the key';
@@ -2733,7 +2692,6 @@ setInterval(() => {
   }
   $('st-rate').textContent = blockTimes.length > 1 ? (blockTimes.length / Math.max(1, (Date.now() - blockTimes[0]) / 1000)).toFixed(1) : '—';
   $('st-near').textContent = nearUsd ? '$' + nearUsd.toFixed(3) : '—';
-  $('st-upd').textContent = raenLastOk ? ((Date.now() - raenLastOk) / 1000).toFixed(0) + 's' : '—';
   while (reqTimes.length && Date.now() - reqTimes[0] > 60e3) reqTimes.shift();
   $('st-req').textContent = reqTimes.length + '';
 }, 1000);
@@ -3059,7 +3017,7 @@ document.addEventListener('click', e => {
 $('btn-pause').onclick = () => {
   running = !running;
   $('btn-pause').textContent = running ? 'Pause' : 'Resume';
-  if (!running) setState('paused', 'Paused'); else { nextH = null; raenPrimed = false; setState('', 'Resuming'); }
+  if (!running) setState('paused', 'Paused'); else { nextH = null; setState('', 'Resuming'); }
 };
 function updateKeyBtn() {}
 
@@ -3069,11 +3027,10 @@ function updateSourceUI() {
   $('src-chain').setAttribute('aria-pressed', source === 'chain');
   $('btn-raenkey').textContent = raenKey ? 'RAEN key (alerts) ✓' : 'RAEN key (alerts)';
   document.querySelectorAll('[data-chain]').forEach(el => { el.hidden = !chainWanted(); });
-  document.querySelectorAll('[data-raen]').forEach(el => { el.hidden = !raenWanted(); });
 }
 function setSource(s) {
   source = s; store.set('tape.source2', s);
-  raenDownUntil = 0; showError(null); updateSourceUI();
+  showError(null); updateSourceUI();
 }
 $('src-both').onclick = () => setSource('both');
 $('src-intear').onclick = () => setSource('intear');
@@ -3090,6 +3047,19 @@ $('keyform').addEventListener('submit', e => {
 $('key-cancel').onclick = () => { setSource('chain'); $('keyform').hidden = true; };
 updateSourceUI();
 $('btn-clear').onclick = () => { trades = []; seenIds.clear(); txKeys.clear(); launches.clear(); scheduleRender(); };
+
+// ---------- cache bounds ----------
+// Secondary caches keyed by token or alert id grow with everything the tape has ever seen;
+// sweep the oldest entries every minute so a tab left open for days stays flat. An evicted
+// token simply re-fetches its metadata/taxes/socials the next time it trades.
+function capMap(m, max) { if (m.size > max) { let n = m.size - max; for (const k of m.keys()) { if (n-- <= 0) break; m.delete(k); } } }
+setInterval(() => {
+  capMap(meta, 4000);
+  if (!meta.has(CFG.WNEAR)) meta.set(CFG.WNEAR, { name: 'Wrapped NEAR', symbol: 'wNEAR', decimals: 24 }); // seeded once at startup and never re-fetched (addTrades skips wNEAR counters), so the sweep must not evict it for good
+  capMap(taxes, 4000); capMap(socialsMap, 4000);
+  capMap(SOC.launchedAt, 4000); capMap(SOC.retryAt, 4000); capMap(SOC.fails, 4000);
+  capMap(lastPriceNear, 4000); capMap(LP.seen, 8000); capMap(knownAlertIds, 5000); capMap(copiedAt, 300);
+}, 60000);
 
 // ---------- recent trades on open ----------
 // Every time the page opens it shows the last 100 launchpad trades (both launchpads together), fetched
