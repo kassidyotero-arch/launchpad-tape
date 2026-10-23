@@ -569,6 +569,11 @@ td.amt .sub { font-weight: 400; }
       <button class="btn" id="btn-pause" type="button">Pause</button>
       <button class="btn" id="btn-clear" type="button">Clear trades</button>
       <label class="chk" title="On open, show the last 100 trades instead of an empty list"><input type="checkbox" id="recent-on" checked> Show last 100 trades on open</label>
+      <div class="seg" role="group" aria-label="Theme">
+        <button type="button" id="th-auto" aria-pressed="true" title="Follow the operating system's light/dark setting">Auto</button>
+        <button type="button" id="th-dark" aria-pressed="false">Dark</button>
+        <button type="button" id="th-light" aria-pressed="false">Light</button>
+      </div>
     </div>
     <form class="hist-server" id="hist-form" aria-label="History server">
       <label for="hist-url"><b>History server</b> address</label>
@@ -703,7 +708,7 @@ td.amt .sub { font-weight: 400; }
   </section>
 
   <footer class="foot">
-    <div>Real-time only: the tape starts at the newest block when the page opens and never loads past transactions. After a pause or a dropped connection it jumps to the newest block instead of catching up.</div>
+    <div>Real-time first: the live feed starts at the newest block when the page opens and never streams in past transactions; on open, the latest 100 trades are loaded once as background and shown with their real ages. After a pause or a dropped connection it jumps to the newest block instead of catching up.</div>
     <div>Detection: a trade is any successful Rhea swap where one side is a token under <code>*.nearlytrade.near</code> (Nearly) or <code>*.launchpad.justhoot.near</code> / <code>*.v2-launchpad.justhoot.near</code> (JustHoot, including tokens still on their bonding stage). Market cap = trade price × <code>ft_total_supply</code> at the time the token was first seen.</div>
     <div>NEAR value is exact when the swap touches wNEAR; marked <span class="est">est</span> when it was priced through another token. USD uses the NEAR price when the trade arrived.</div>
     <div>Fastest mode races all feeds at once: Intear, the on-chain decoder (reading blocks before finality when the block service allows it). The first to see a trade shows it; Settings shows which feed is winning.</div>
@@ -1361,24 +1366,24 @@ function derive(t) {
   const supply = m && m.supply != null && dec != null ? Number(m.supply) / Math.pow(10, dec) : null;
   const rate = t.usdRate || nearUsd;
   if (t.src === 'intear') {
-    // Intear gives raw token units, the wNEAR side, and an exact USD value
+    // Intear gives raw token units, the wNEAR side, and a fallback USD value
     const tok = dec != null ? Number(t.tokenRaw) / Math.pow(10, dec) : null;
     let near = t.near, est = false;
     if (near == null && t.usd != null && rate) { near = t.usd / rate; est = true; }
-    const usd = t.usd != null ? t.usd : (near != null && rate ? near * rate : null);
+    const usd = near != null && rate ? near * rate : (t.usd != null ? t.usd : null);
     const price = near != null && tok ? near / tok : null;
     const cap = price != null && supply != null ? price * supply : null;
-    const capUsd = usd != null && tok && supply != null ? usd / tok * supply : (cap != null && rate ? cap * rate : null);
+    const capUsd = cap != null && rate ? cap * rate : (usd != null && tok && supply != null ? usd / tok * supply : null);
     return { m, tok, near, usd, price, cap, capUsd, est };
   }
   const tok = dec != null ? Number(t.tokenRaw) / Math.pow(10, dec) : null;
   const near = t.nearRaw != null ? Number(t.nearRaw) / 1e24 : counterNear(t);
   let nearV = near, estV = t.via === 'est' && near != null;
   if (nearV == null && t.usdRaen != null && rate) { nearV = t.usdRaen / rate; estV = true; }
-  const usd = t.usdRaen != null ? t.usdRaen : (nearV != null && rate ? nearV * rate : null);
+  const usd = nearV != null && rate ? nearV * rate : (t.usdRaen != null ? t.usdRaen : null);
   const price = nearV != null && tok ? nearV / tok : null;
   const cap = price != null && supply != null ? price * supply : null;
-  const capUsd = cap != null && rate ? cap * rate : null;
+  const capUsd = cap != null && rate ? cap * rate : (usd != null && tok && supply != null ? usd / tok * supply : null);
   return { m, tok, near: nearV, usd, price, cap, capUsd, est: estV };
 }
 
@@ -1620,7 +1625,7 @@ function render() {
       continue;
     }
     const d = derive(t);
-    if (d.price != null && !lastPriceNear.has(t.token)) lastPriceNear.set(t.token, d.price);
+    if (d.price != null) lastPriceNear.set(t.token, d.price);
     if (!passes(t, d)) continue;
     matched++;
     if (shown < CFG.MAX_ROWS) {
@@ -1749,7 +1754,6 @@ function addTrades(list, sortAfter, opts) {
   if (!added) return;
   trades.sort((a, b) => b.seenAt - a.seenAt || b.ts - a.ts || (a.id < b.id ? 1 : -1));
   if (trades.length > CFG.MAX_TRADES) { for (const t of trades.splice(CFG.MAX_TRADES)) { seenIds.delete(t.id); const k = txKeyOf(t); if (k && txKeys.get(k) === t) txKeys.delete(k); if (t.kind === 'launch') launches.delete(t.token); } }
-  saveRecentSoon();
   if (seenIds.size > 60000) { seenIds.clear(); for (const t of trades) seenIds.add(t.id); } // long sessions stay light
   scheduleRender(!past);
 }
@@ -2312,7 +2316,6 @@ function launchAlertHtml(a) {
   const who = !a.creator ? '<span class="who">creator not known yet</span>'
     : watched ? `<span class="who gold" title="${esc(a.creator)}">★ ${esc(label || shortAcct(a.creator))}</span>`
     : `<span class="who" title="${esc(a.creator)}">${esc(label || a.creator)}</span>`;
-  const isNew = unreadAlerts.has(a.id);
   const since = shakeFrom.has(a.id) ? Date.now() - shakeFrom.get(a.id) : Infinity;
   const anim = since < 3000 ? (watched ? ` shake" style="animation-delay:-${since}ms` : ` glow" style="animation-delay:-${since}ms`) : '';
   return `<div role="button" tabindex="0" class="alert-card launch${watched ? ' watched' : ''}${anim}" data-token="${esc(a.token)}" title="${esc(sym + ' launched on ' + p.name + (a.creator ? ' by ' + a.creator : '') + '\nClick to filter trades by this token')}">
@@ -2534,10 +2537,25 @@ function loadShots() {
     .then(buf => { shotsBuf = buf; return buf; }).catch(() => { shotsLoading = null; });
   return shotsLoading;
 }
+// fallback for when the shots file itself cannot be fetched: three quick 8-bit-style descending blips
+function playSynthShots(ctx, out) {
+  const t = ctx.currentTime;
+  for (let i = 0; i < 3; i++) {
+    const o = ctx.createOscillator(), v = ctx.createGain();
+    o.type = 'square';
+    o.frequency.setValueAtTime(920, t + i * 0.13); o.frequency.exponentialRampToValueAtTime(220, t + i * 0.13 + 0.09);
+    v.gain.setValueAtTime(0.0001, t + i * 0.13); v.gain.exponentialRampToValueAtTime(0.18, t + i * 0.13 + 0.012); v.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.13 + 0.1);
+    o.connect(v); v.connect(out); o.start(t + i * 0.13); o.stop(t + i * 0.13 + 0.11);
+  }
+}
 // the watched-wallet sound (your 8-bit game shots), at the same volume as the alert sound
 async function playWatchSound() {
   const ctx = audio(); if (!ctx || ctx.state !== 'running') return;
-  const buf = shotsBuf || await loadShots(); if (!buf) return;
+  const buf = shotsBuf || await loadShots();
+  if (!buf) { // the shots file cannot load (e.g. the page was opened as a local file) - synthesise the shots instead of staying silent
+    const out = ctx.createGain(); out.gain.value = Math.pow(soundVol / 100, 1.6); out.connect(ctx.destination);
+    playSynthShots(ctx, out); return 0.5;
+  }
   const out = ctx.createGain(); out.gain.value = Math.pow(soundVol / 100, 1.6); out.connect(ctx.destination);
   const src = ctx.createBufferSource(); src.buffer = buf; src.connect(out); src.start();
   watchSrc = src; src.onended = () => { if (watchSrc === src) watchSrc = null; };
@@ -2574,6 +2592,20 @@ function updateSoundUI() {
 function setSoundKind(k) { soundKind = k; store.set('tape.soundKind', k); updateSoundUI(); unlockAudio(); setTimeout(() => playBell(true), 60); }
 $('snd-chime').onclick = () => setSoundKind('chime');
 $('snd-bell').onclick = () => setSoundKind('bell');
+// ---------- theme: Auto follows the OS; Dark/Light pin the data-theme attribute (both palettes already ship in the CSS) ----------
+let themeMode = store.get('tape.theme', 'auto');
+function applyTheme() {
+  const r = document.documentElement;
+  if (themeMode === 'auto') r.removeAttribute('data-theme'); else r.setAttribute('data-theme', themeMode);
+  $('th-auto').setAttribute('aria-pressed', themeMode === 'auto');
+  $('th-dark').setAttribute('aria-pressed', themeMode === 'dark');
+  $('th-light').setAttribute('aria-pressed', themeMode === 'light');
+}
+function setTheme(m) { themeMode = m; store.set('tape.theme', m); applyTheme(); }
+$('th-auto').onclick = () => setTheme('auto');
+$('th-dark').onclick = () => setTheme('dark');
+$('th-light').onclick = () => setTheme('light');
+applyTheme();
 $('snd-vol').addEventListener('input', e => { soundVol = +e.target.value; store.set('tape.soundVol', soundVol); updateSoundUI(); });
 $('snd-vol').addEventListener('change', () => { unlockAudio(); playBell(true); });
 $('snd-test').onclick = () => { unlockAudio(); setTimeout(() => playBell(true), 60); };
@@ -2640,10 +2672,6 @@ function renderRaenNote() {
                                                  : `OK (checked ${ago(raenStatus.alertsOkAt)}, every ${Math.round(alertsPollMs / 1000)} s)`);
 }
 setInterval(() => { if (!$('settings-panel').hidden) renderRaenNote(); }, 1000);
-function setAlertsNote(text, why) {
-  const el = $('alerts-note'); if (!el) return;
-  el.textContent = text; el.hidden = !text; el.title = why || '';
-}
 
 // ---------- race scoreboard: which feed sees each trade first ----------
 function renderRace() {
@@ -3019,8 +3047,6 @@ $('btn-pause').onclick = () => {
   $('btn-pause').textContent = running ? 'Pause' : 'Resume';
   if (!running) setState('paused', 'Paused'); else { nextH = null; setState('', 'Resuming'); }
 };
-function updateKeyBtn() {}
-
 function updateSourceUI() {
   $('src-both').setAttribute('aria-pressed', source === 'both');
   $('src-intear').setAttribute('aria-pressed', source === 'intear');
@@ -3067,7 +3093,6 @@ setInterval(() => {
 const RECENT_COUNT = 100;
 let recentOn = store.get('tape.recentOnOpen', true);
 try { localStorage.removeItem('tape.recentRows'); } catch (e) {} // rows saved by an earlier version
-function saveRecentSoon() {}
 const RF = { running: false, lastAt: 0, lastErr: null, added: 0 };
 async function intearGet(path, params) {
   const q = new URLSearchParams();
@@ -3245,7 +3270,7 @@ loop();
       }
       if (alerts) {
         var mapped = alerts.map(function (a, i) {
-          return { id: 'S:' + a.ts + ':' + i, kind: 'srv', srvKind: a.kind, at: a.ts, title: a.text,
+          return { id: 'S:' + a.ts + ':' + i, kind: 'srv', srvKind: a.kind, at: a.ts, title: a.text, side: a.side || null,
                    token: a.token || srvTextToken(a),
                    tone: KIND_TONE[a.kind] || '', symbol: KIND_LABEL[a.kind] || '🤖 Bot' };
         });
@@ -3257,7 +3282,7 @@ loop();
           fresh.forEach(function (a) {
             unreadAlerts.add(a.id); shakeFrom.set(a.id, now);
             // a watched wallet buying gets the dashboard's own watch treatment (bell + repeating shots sound)
-            if (a.srvKind === 'watch' && /MUA/.test(a.title)) {
+            if (a.srvKind === 'watch' && (a.side ? a.side === 'buy' : /MUA/.test(a.title))) { // bot records carry the direction; the text test only covers records written before the field existed
               try { onWatchedTrades([{ id: a.id, kind: 'watch' }]); } catch (e) {}
             }
           });
