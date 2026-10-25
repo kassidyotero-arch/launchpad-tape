@@ -154,6 +154,13 @@ a { color: inherit; }
 .alert-card.shake { animation: card-shake 3s ease-in-out both; box-shadow: 0 0 0 2px var(--warn); }
 /* launch cards: left = token logo, launchpad, tax · right = name + links, creator, contract, age */
 .alert-card.launch { grid-template-columns: 74px minmax(0, 1fr); gap: 0 12px; position: relative; width: 350px; }
+.alert-card.launch .det { display: flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; }
+.alert-card.launch .det .who { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.alert-card .devpk { all: unset; cursor: pointer; flex: none; display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px 0 5px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--panel-2); color: var(--muted); font-size: 10.5px; font-weight: 700; }
+.alert-card .devpk:hover { color: var(--fg); border-color: var(--muted); }
+.alert-card .devpk:focus-visible { outline: 2px solid var(--nearly); outline-offset: 1px; }
+.alert-card .devpk svg { width: 11px; height: 11px; }
 .alert-card.launch .lcol { grid-column: 1; grid-row: 1; display: flex; flex-direction: column; align-items: center; gap: 7px; min-width: 0; }
 .alert-card.launch .lcol .ic { grid-row: auto; width: 52px; height: 52px; border-radius: 12px; }
 .alert-card.launch .rcol { grid-column: 2; grid-row: 1; display: grid; gap: 5px; align-content: start; min-width: 0; }
@@ -681,6 +688,7 @@ td.amt .sub { font-weight: 400; }
       <div class="f"><label for="h-min">Min USD</label><input type="number" id="h-min" min="0" step="any" placeholder="0"></div>
       <div class="hist-btns"><button class="btn primary" type="submit">Search</button><button class="btn" type="button" id="h-clear">Clear</button></div>
     </form>
+    <div class="hist-note" id="h-note">USD &amp; MC in this panel are estimates: each trade's NEAR amount × the current NEAR price — not the rate at trade time.</div>
     <div class="hist-sum" id="h-sum"></div>
     <div class="scroll"><table class="htable"><thead><tr><th>Date</th><th>Side</th><th>Token</th><th class="r">Amount</th><th>Wallet</th></tr></thead><tbody id="h-rows"></tbody></table></div>
     <div class="hist-foot"><span id="h-msg"></span><button class="btn" type="button" id="h-more" hidden>Load more</button></div>
@@ -1040,20 +1048,12 @@ async function tearPriceUsd() {
 }
 async function updateTear() {
   if (Date.now() - tearLiveAt < 20000) return; // Intear is pushing it live
-  needMeta(TEAR_ID);
-  const m = meta.get(TEAR_ID);
-  const price = await tearPriceUsd();
-  const el = document.getElementById('px-TEAR');
-  if (!el || !(price > 0) || !m || m.supply == null || m.decimals == null) return;
-  const mc = price * Number(m.supply) / Math.pow(10, m.decimals);
-  el.querySelector('.v').textContent = fmtUsd(mc);
-  el.title = `TEAR (${TEAR_ID}) · price $${fmtPrice(price)} · market cap ${fmtUsd(mc)}`;
-  if (tearPrev != null && mc !== tearPrev) {
-    el.classList.remove('tick-up', 'tick-down'); void el.offsetWidth;
-    el.classList.add(mc > tearPrev ? 'tick-up' : 'tick-down');
-    clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove('tick-up', 'tick-down'), 600);
-  }
-  tearPrev = mc;
+  try { // prefer Intear's own market cap (circulating-supply basis), same as the live pushes
+    const j = await intearGet('/tokens?ids=' + TEAR_ID + '&fields=market_cap_usd,price_usd');
+    const row = j ? tableRows(j).find(o => o.account_id === TEAR_ID) : null;
+    if (row && Number(row.market_cap_usd) > 0) { tearFromIntear(row); return; }
+  } catch (e) {}
+  // no estimate tier: when Intear is unreachable the chip keeps its last live value
 }
 let pxWsFails = 0, pxPollTimer = null;
 function startPricePolling() {
@@ -1177,6 +1177,7 @@ function taxLineHtml(token) {
   if (!v || v.failed || (v.buy == null && v.sell == null)) return '';
   let tip = `Buy tax ${fmtPct(v.buy || 0)} · Sell tax ${fmtPct(v.sell || 0)}`;
   if (v.split) { const parts = []; if (v.split.holders) parts.push(fmtPct(v.split.holders) + ' to holders'); if (v.split.owner) parts.push(fmtPct(v.split.owner) + ' to the creator'); if (v.split.burn) parts.push(fmtPct(v.split.burn) + ' burned'); if (parts.length) tip += ' · ' + parts.join(', '); }
+  if (token.endsWith('.v2-launchpad.justhoot.near')) tip += ' · + 1% DCL pool fee after graduation'; // graduated v2 tokens also pay the Rhea DCL pool fee on every swap
   return `<span class="tax" title="${esc(tip)}">tax <b class="tb">${fmtPct(v.buy || 0)}</b> / <b class="ts">${fmtPct(v.sell || 0)}</b></span>`;
 }
 // ---------- token links (website / X / Telegram), as the creator entered them on the launchpad ----------
@@ -1302,19 +1303,24 @@ function socialsHtml(id) {
   return '<span class="soci">' + keys.map(k => `<a href="${esc(l[k])}" target="_blank" rel="noopener noreferrer nofollow" title="${SOC_NAMES[k]}: ${esc(l[k])}" aria-label="${SOC_NAMES[k]}: ${esc(l[k])}">${SOC_ICONS[k]}</a>`).join('') + '</span>';
 }
 function socialsKey(id) { const v = socialsMap.get(id); return v ? Object.keys(v.l || {}).join(',') : ''; }
-const metaPending = new Set(); const metaQueue = []; let metaActive = 0;
+const metaPending = new Set(); const metaQueue = []; let metaTimer = null;
 function needMeta(id) {
   if (!id || metaPending.has(id)) return;
   const m = meta.get(id);
   if (m && !m.failed && (!padOf(id) || Date.now() - (m.at || 0) < 6 * 3600e3)) return;
   if (m && m.failed && Date.now() - m.at < 60e3) return;
-  metaPending.add(id); metaQueue.push(id); pumpMeta();
+  metaPending.add(id); metaQueue.push(id);
+  if (!metaTimer) metaTimer = setTimeout(flushMeta, 100); // one batched POST /tokens for everything queued (was one GET per token)
 }
-function pumpMeta() {
-  while (metaActive < 3 && metaQueue.length) {
-    const id = metaQueue.shift(); metaActive++;
-    loadMeta(id).finally(() => { metaActive--; metaPending.delete(id); scheduleRender(); if (alerts.length) renderTicker(); pumpMeta(); });
-  }
+async function flushMeta() {
+  metaTimer = null;
+  const ids = metaQueue.splice(0, 100);
+  if (!ids.length) return;
+  if (metaQueue.length && !metaTimer) metaTimer = setTimeout(flushMeta, 100);
+  let byId = null;
+  try { byId = new Map((await intearTokensBatch(ids)).map(o => [o.account_id, o])); } catch (e) {}
+  await Promise.all(ids.map(id => loadMeta(id, byId ? byId.get(id) : undefined)
+    .finally(() => { metaPending.delete(id); scheduleRender(); if (alerts.length) renderTicker(); })));
 }
 let metaSaveT = null;
 function tableRows(res) {
@@ -1329,11 +1335,20 @@ async function intearToken(id) {
   if (!row || row.decimals == null) throw new Error('not listed');
   return { md: { name: row.name, symbol: row.symbol, decimals: Number(row.decimals), icon: row.icon }, sup: row.total_supply != null ? String(row.total_supply) : null };
 }
-async function loadMeta(id) {
+async function intearTokensBatch(ids) {
+  const r = await fetchT(CFG.INTEAR_HTTP + '/tokens', { method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store',
+    body: JSON.stringify({ ids, fields: ['name', 'symbol', 'decimals', 'icon', 'total_supply'] }) }, 12000);
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return tableRows(await r.json());
+}
+async function loadMeta(id, row) {
   try {
     let md, sup;
-    try { ({ md, sup } = await intearToken(id)); }
-    catch (e) { [md, sup] = await Promise.all([view(id, 'ft_metadata'), view(id, 'ft_total_supply').catch(() => null)]); }
+    if (row && row.decimals != null) { md = { name: row.name, symbol: row.symbol, decimals: Number(row.decimals), icon: row.icon }; sup = row.total_supply != null ? String(row.total_supply) : null; }
+    else {
+      try { ({ md, sup } = await intearToken(id)); }
+      catch (e) { [md, sup] = await Promise.all([view(id, 'ft_metadata'), view(id, 'ft_total_supply').catch(() => null)]); }
+    }
     let icon = typeof md.icon === 'string' && (md.icon.startsWith('data:image') || md.icon.startsWith('https://')) ? md.icon : null;
     if (icon && icon.length > 60000) icon = null;
     meta.set(id, { name: md.name || id, symbol: md.symbol || id.split('.')[0], decimals: md.decimals, icon, supply: sup, at: Date.now() });
@@ -1836,7 +1851,8 @@ let chainOk = false;
 function intearWanted() { return source === 'both' || source === 'intear'; }
 // Intear counts as healthy while connected, and for a short grace period while (re)connecting
 // healthy = connected AND heard from recently (the NEAR-price heartbeat arrives about every second)
-function intearHealthy() { return (I.ok && Date.now() - I.lastMsg < 12000) || Date.now() - I.downSince < CFG.INTEAR_GRACE_MS; }
+function intearTradesFlowing() { return !(I.subRefused || I.tradesStale) || Date.now() - PL.lastOkAt < 15000; }
+function intearHealthy() { return ((I.ok && Date.now() - I.lastMsg < 12000) || Date.now() - I.downSince < CFG.INTEAR_GRACE_MS) && intearTradesFlowing(); }
 // on-chain decoding is the safety net: always in On-chain mode, otherwise only when the main feed is down
 function chainWanted() {
   if (source === 'chain') return true;
@@ -1851,7 +1867,7 @@ function refreshState() {
   if (act !== lastActive) { lastActive = act; updateSourceUI(); }
   if (!running) return;
   const parts = [];
-  if (intearWanted() && I.ok) parts.push('Intear');
+  if (intearWanted() && I.ok && intearTradesFlowing()) parts.push(I.subRefused || I.tradesStale ? 'Intear (backup polling)' : 'Intear');
   if (chainWanted() && chainOk) parts.push('chain');
   if (!parts.length) { setState('err', 'Reconnecting'); return; }
   setState('live', 'Live · ' + parts.join(' + '));
@@ -2044,7 +2060,9 @@ async function launchPollTick() {
 async function launchPollLoop() {
   while (true) {
     if (running) { try { await launchPollTick(); } catch (e) { LP.lastErr = e.message; } }
-    await sleep(CFG.LAUNCH_POLL_MS);
+    // launches also arrive live via the Intear launch subscription and the on-chain decoder;
+    // while both are healthy this HTTP poll is only a backstop, so it can run at a slow cadence
+    await sleep(I.ok && I.newMode === 'launchpads' && chainWanted() && chainOk ? 120e3 : CFG.LAUNCH_POLL_MS);
   }
 }
 
@@ -2084,8 +2102,9 @@ function mapIntear(o) {
   if (pin) out.push(mk('sell', pin, o.token_in, o.amount_in, o.token_out, o.amount_out, pout ? ':s' : ''));
   return out;
 }
-function intearRows(rows, cols, past) {
+function intearRows(rows, cols, past, fromSub) {
   if (!rows || !rows.length) return;
+  if (fromSub) I.lastPush = Date.now();
   const list = [];
   for (const r of rows) {
     const o = {}; cols.forEach((c, i) => { o[c] = r[i]; });
@@ -2139,19 +2158,25 @@ function intearConnect(resume) {
             subIds.add(req.id); accept(await req.promise, params); okP.push(parent);
           } catch (e2) { if (e2 && e2.code === 'too_far_behind') throw e2; }
         }
-        if (!okP.length) throw firstErr;
-        I.mode = 'only ' + okP.join(', ');
+        if (!okP.length) {
+          // Intear won't stream trades right now; keep the connection (prices, launches) and poll for trades instead
+          I.subRefused = true; I.subRefusedAt = Date.now();
+          I.mode = 'backup polling (live feed refused: ' + ((firstErr && (firstErr.code || firstErr.message)) || 'refused') + ')';
+        } else I.mode = 'only ' + okP.join(', ');
       }
+      if (I.mode === 'all trades' || (I.mode || '').startsWith('only ')) { I.subRefused = false; I.tradesStale = false; }
       I.lastError = firstErr ? (firstErr.code || firstErr.message) : null;
       live = true;
       const old = I.ws; I.ws = ws; I.connecting = null; I.ok = true; I.fails = 0; I.resubAt = Infinity; I.subAt = Date.now();
       if (old && old !== ws) { old.onclose = null; try { old.close(); } catch (e) {} }
       I.lastMsg = Date.now();
       showError(null); refreshState();
-      // NEAR price pushes arrive about once a second: a fast heartbeat that spots a frozen socket in ~10 s
+      // price pushes for wNEAR + $TEAR every ~3 s on one shared subscription: a heartbeat that spots a
+      // frozen socket in ~10 s (see the watchdog) and keeps the $TEAR market cap fresh
       I.beats = 0;
-      const hb = iRequest(ws, 'tokens.subscribe', { fields: ['price_usd'], ids: [CFG.WNEAR], min_interval_ms: 1000 });
-      beatSubId = hb.id; hb.promise.catch(() => {});
+      const hb = iRequest(ws, 'tokens.subscribe', { fields: ['market_cap_usd', 'price_usd'], ids: [CFG.WNEAR, TEAR_ID], min_interval_ms: 5000 });
+      beatSubId = hb.id; tearSubId = hb.id;
+      hb.promise.then(r => { const row = tableRows(r).find(o => o.account_id === TEAR_ID); if (row) tearFromIntear(row); }).catch(() => {});
       // newest tokens under the three launchpads (falls back to the newest tokens on all of NEAR if the
       // launchpad filter is refused); a token that enters this list is a launch
       const subNew = (params, mode, onFail) => {
@@ -2161,10 +2186,6 @@ function intearConnect(resume) {
           .catch(e => { if (ws === I.ws || I.connecting === ws) onFail(e); });
       };
       subNew(newTokensParams(true, 20), 'launchpads', () => subNew(newTokensParams(false, 50), 'all tokens', e => { I.newMode = 'off (' + ((e && (e.code || e.message)) || 'refused') + ')'; }));
-      // $TEAR market cap, pushed live on the same socket
-      const tr = iRequest(ws, 'tokens.subscribe', { fields: ['market_cap_usd', 'price_usd'], ids: [TEAR_ID], min_interval_ms: 1000 });
-      tearSubId = tr.id;
-      tr.promise.then(r => { const row = tableRows(r).find(o => o.account_id === TEAR_ID); if (row) tearFromIntear(row); }).catch(() => {});
     } catch (e) {
       if (e && e.code === 'too_far_behind') I.latestId = null; // start fresh next time
       I.lastError = e ? (e.code ? e.code + ': ' + (e.message || '') : e.message) : 'refused';
@@ -2180,9 +2201,8 @@ function intearConnect(resume) {
       if (m.error) p.rej(Object.assign(new Error(m.error.message || m.error.code), { code: m.error.code })); else p.res(m.result);
       return;
     }
-    if (m.sub != null && subIds.has(m.sub) && m.rows && cols) { intearRows(m.rows, cols); return; }
-    if (m.sub != null && m.sub === tearSubId && m.set && m.set[TEAR_ID]) { tearFromIntear(m.set[TEAR_ID]); return; }
-    if (m.sub != null && m.sub === beatSubId) { if (ws === I.ws) I.beats++; return; }
+    if (m.sub != null && subIds.has(m.sub) && m.rows && cols) { intearRows(m.rows, cols, false, true); return; }
+    if (m.sub != null && m.sub === beatSubId) { if (ws === I.ws) I.beats++; if (m.set && m.set[TEAR_ID]) tearFromIntear(m.set[TEAR_ID]); return; }
     if (m.sub != null && m.sub === newSubId) {
       // push: { sub, height, timestamp_millis, set: { token: {fields} }, created: [tokens just created], left: [...] }
       const set = m.set || {};
@@ -2248,7 +2268,73 @@ function tearFromIntear(o) {
 // Holding a Web Lock tells Chrome not to freeze or discard this tab in the background.
 try { navigator.locks && navigator.locks.request('launchpad-tape-keepalive', () => new Promise(() => {})).catch(() => {}); } catch (e) {}
 
-function loop() { intearLoop(); chainLoop(); gapLoop(); launchPollLoop(); alertsLoop(); }
+// ---------- safety net for the live trade feed ----------
+// While the live feed looks fine, compare it with Intear's list of newest trades whenever pushed trades
+// pause for 25 s (plus a slow 5-minute backstop check): if launchpad trades
+// are missing, the feed is broken (connected, but not delivering). When the feed is broken or refused, ask
+// Intear for new trades every 4 s instead. If even that fails, the NEAR block feed takes over (see intearHealthy).
+const PL = { lastOkAt: 0, lastCheck: 0, lastErr: null, polls: 0, missed: 0, staleSince: 0 };
+// newest trades: all of NEAR in one request; if Intear refuses that (it limits trade lookups to 100 tokens),
+// ask about the launchpad tokens that are trading, 100 tokens per request (list refreshed every 2 minutes)
+const ACT = { ids: null, at: 0 };
+async function intearNewest(limit) {
+  const list = [];
+  try {
+    const r = await intearGet('/trades', { fields: TRADE_FIELDS, limit, order: 'newest' });
+    for (const o of tableRows(r)) list.push(...mapIntear(o));
+    PL.how = 'all trades';
+    return list;
+  } catch (e) {
+    if (!/too_many|more than/i.test(e.message || '')) throw e;
+  }
+  if (!ACT.ids || Date.now() - ACT.at > 120e3) { ACT.ids = await activeLaunchpadTokens(); ACT.at = Date.now(); }
+  for (const l of launches.values()) if (Date.now() - (l.ts || 0) < 3600e3 && !ACT.ids.includes(l.token)) ACT.ids.push(l.token); // brand-new tokens too
+  const chunks = [];
+  for (let i = 0; i < ACT.ids.length; i += TOKENS_PER_QUERY) chunks.push(ACT.ids.slice(i, i + TOKENS_PER_QUERY));
+  const res = await Promise.allSettled(chunks.map(c => intearGet('/trades', { fields: TRADE_FIELDS, token: c, limit: 50, order: 'newest' })));
+  if (res.length && res.every(r => r.status === 'rejected')) throw res[0].reason;
+  for (const r of res) if (r.status === 'fulfilled') for (const o of tableRows(r.value)) list.push(...mapIntear(o));
+  PL.how = 'by token (' + ACT.ids.length + ' trading tokens)';
+  return list;
+}
+async function pollTradesOnce(backup) {
+  const list = await intearNewest(backup ? 200 : 100);
+  PL.lastOkAt = Date.now(); PL.lastErr = null; PL.polls++;
+  if (!backup) {
+    // spot-check: launchpad trades that are 20 s – 3 min old should have arrived through the live feed by now
+    const since = Math.max(I.subAt || 0, pageOpenedAt) + 5000;
+    const missing = list.filter(t => t.ts > since && Date.now() - t.ts > 12e3 && Date.now() - t.ts < 180e3 && !seenIds.has(t.id) && !txKeys.has(txKeyOf(t)));
+    if (missing.length >= 2) { I.tradesStale = true; PL.staleSince = Date.now(); PL.missed += missing.length; refreshState(); backup = true; }
+    else return;
+  }
+  // add what the feed missed: recent trades as live rows, older ones quietly
+  const fresh = list.filter(t => !seenIds.has(t.id) && !txKeys.has(txKeyOf(t)));
+  const live = fresh.filter(t => Date.now() - t.ts < 120e3 && t.ts >= pageOpenedAt);
+  const quiet = fresh.filter(t => !live.includes(t)).map(t => { t.seenAt = t.ts; return t; });
+  if (quiet.length) addTrades(quiet, false, { past: true });
+  if (live.length) addTrades(live);
+}
+async function intearPollLoop() {
+  let resubAt = 0;
+  while (true) {
+    const on = running && intearWanted() && (I.ws || I.connecting || I.subRefused);
+    const backup = on && (I.subRefused || I.tradesStale || (I.ws == null && !I.ok));
+    const pushAge = Date.now() - (I.lastPush || I.subAt || 0);
+    const checkDue = on && I.ok && !backup && Date.now() - PL.lastCheck > 20e3 && Date.now() - (I.subAt || 0) > 20e3 && (pushAge > 25e3 || Date.now() - PL.lastCheck > 300e3);
+    if (backup || checkDue) {
+      if (checkDue) PL.lastCheck = Date.now();
+      try { await pollTradesOnce(backup); } catch (e) { PL.lastErr = e.message; }
+      refreshState();
+    }
+    // a broken or refused live feed: try subscribing again every 2 minutes (pushed trades clear the broken state)
+    if ((I.tradesStale || I.subRefused) && I.ws && Date.now() - resubAt > 120e3 && Date.now() - (I.subAt || 0) > 120e3) {
+      resubAt = Date.now(); try { I.ws.close(); } catch (e) {}
+    }
+    if (I.tradesStale && I.lastPush > PL.staleSince) { I.tradesStale = false; refreshState(); }
+    await sleep(backup ? 4000 : 2000);
+  }
+}
+function loop() { intearLoop(); chainLoop(); gapLoop(); launchPollLoop(); intearPollLoop(); alertsLoop(); }
 
 // ---------- RAEN alerts ticker ----------
 // GET /alerts (last 24h). Field names are read defensively because RAEN doesn't publish the schema.
@@ -2323,7 +2409,7 @@ function launchAlertHtml(a) {
     <span class="rcol">
       <span class="newtag">NEW</span>
       <span class="sym"><span class="nm" title="${esc(sym)}">${esc(sym)}</span>${socialsHtml(a.token)}</span>
-      <span class="det">by ${who}</span>
+      <span class="det">by ${who}${a.creator ? `<a class="devpk" href="${CFG.EXPLORER_ACCOUNT}${encodeURIComponent(a.creator)}" target="_blank" rel="noopener" title="Open the dev wallet ${esc(a.creator)} on Pikespeak" aria-label="Open dev wallet ${esc(a.creator)} on Pikespeak">${EXT_ICON}<span>dev wallet</span></a>` : ''}</span>
       <span class="ca"><code title="${esc(a.token)}">${esc(a.token)}</code><button class="copy" type="button" data-copy="${esc(a.token)}" title="Copy contract" aria-label="Copy contract ${esc(a.token)}">${COPY_ICON}</button><a class="xsearch" href="${xSearchUrl(a.token)}" target="_blank" rel="noopener" title="Search X for ${esc(a.token)}" aria-label="Search X for ${esc(a.token)}">${SEARCH_ICON}</a></span>
       <span class="ago" data-ts="${a.at}">${fmtAgo(a.at)}</span>
     </span></div>`;
@@ -2736,7 +2822,7 @@ function syncFilterUI() {
 // ---------- history (from the Launchpad Tape server) ----------
 // History comes from your own server when one is set (or when the page is opened from it), otherwise
 // straight from Intear, which keeps every trade and allows any website to ask: no server needed.
-const H = { base: '', next: null, busy: false, q: null, rows: 0, status: null, mode: 'intear', checked: null };
+const H = { base: '', next: null, busy: false, q: null, rows: 0, status: null, mode: 'intear', checked: null, rate: null };
 function histBase() {
   const saved = store.get('tape.histServer', '') || '';
   if (saved) return saved.replace(/\/+$/, '');
@@ -2789,11 +2875,16 @@ function histQuery() {
   if ($('h-min').value) q.set('min_usd', $('h-min').value);
   return q;
 }
+// History has no exchange rate from trade time, so a row's USD is its NEAR amount at one snapshotted
+// rate (H.rate, taken when the search runs — same basis as the live tape's derive); Intear's own
+// USD figure is only a fallback for rows without a NEAR amount.
+function histUsd(r) { const rate = H.rate || nearUsd; return r.near != null && rate ? r.near * rate : r.usd; }
 function histRowHtml(r) {
   const t = { pad: r.pad, token: r.token };
   const hm = meta.get(r.token);
+  const usd = histUsd(r);
   if (!r.symbol && hm && !hm.failed) { r.symbol = hm.symbol; r.name = hm.name; }
-  if (r.mc_usd == null && r.usd != null && r.tokens > 0 && hm && hm.supply && hm.decimals != null) r.mc_usd = r.usd / r.tokens * (Number(hm.supply) / Math.pow(10, hm.decimals));
+  if (r.mc_usd == null && usd != null && r.tokens > 0 && hm && hm.supply && hm.decimals != null) r.mc_usd = usd / r.tokens * (Number(hm.supply) / Math.pow(10, hm.decimals));
   const sym = r.symbol || r.token.split('.')[0].replace(/-[0-9a-f]{6}$/, '').toUpperCase();
   const label = labels[r.trader]; const isW = isWatched(r.trader);
   const mc = r.mc_usd != null ? fmtUsd(r.mc_usd) : '—';
@@ -2803,7 +2894,7 @@ function histRowHtml(r) {
     <td><div class="tok"><div class="names"><div class="line1"><button class="sym" type="button" data-htoken="${esc(r.token)}" title="History of this token">${esc(sym)}</button>${r.name && r.name !== sym ? `<small>${esc(r.name)}</small>` : ''}</div>
       <div class="ca"><code title="${esc(r.token)}">${esc(r.token)}</code><button class="copy" type="button" data-copy="${esc(r.token)}" title="Copy contract" aria-label="Copy contract ${esc(r.token)}">${COPY_ICON}</button>${padPageLink(t)}</div>
       <div class="mc">MC <b>${mc}</b></div></div></div></td>
-    <td class="num r amt"><span class="u">${fmtUsd(r.usd)}</span><span class="sub">${r.near != null ? fmtNum(r.near, 2) + ' Ⓝ' : '—'}</span></td>
+    <td class="num r amt"><span class="u">${fmtUsd(usd)}</span><span class="sub">${r.near != null ? fmtNum(r.near, 2) + ' Ⓝ' : '—'}</span></td>
     <td><div class="wallet">${isW ? '<span class="wstar" aria-hidden="true">★</span>' : ''}<button class="w" type="button" data-hwallet="${esc(r.trader || '')}" title="${esc(r.trader || '')} · this wallet's history">${label ? '<span class="tag">' + esc(label) + '</span>' : esc(shortAcct(r.trader))}</button><a class="pk" href="${CFG.EXPLORER_ACCOUNT}${encodeURIComponent(r.trader || '')}" target="_blank" rel="noopener" title="Open wallet on Pikespeak">${EXT_ICON}</a></div>
       <div class="txline">${r.tx ? `<a class="ext" href="${CFG.EXPLORER_TX}${encodeURIComponent(r.tx)}" target="_blank" rel="noopener" title="Open transaction on Pikespeak">tx ${esc(r.tx.slice(0, 8))}↗</a>` : ''}</div></td>
   </tr>`;
@@ -2849,7 +2940,7 @@ async function intearHistPage(more) {
       if (f.pad && r.pad !== f.pad) continue;
       if (f.side && r.side !== f.side) continue;
       if (f.wallet && r.trader !== f.wallet) continue;
-      if (f.minUsd && !(r.usd >= f.minUsd)) continue;
+      if (f.minUsd && !(histUsd(r) >= f.minUsd)) continue;
       needMeta(r.token);
       rows.push(r);
     }
@@ -2864,13 +2955,14 @@ function sumHtml(sm, partial) {
   return `<span><b>${sm.trades.toLocaleString()}</b> trades${partial ? ' loaded' : ''}</span>
     <span class="buy">bought <b>${fmtUsd(sm.buy_usd || 0)}</b> (${fmtNum(sm.buy_near || 0, 1)} Ⓝ, ${sm.buys})</span>
     <span class="sell">sold <b>${fmtUsd(sm.sell_usd || 0)}</b> (${fmtNum(sm.sell_near || 0, 1)} Ⓝ, ${sm.sells})</span>
-    <span><b>${sm.tokens}</b> tokens · <b>${sm.wallets}</b> wallets</span><span>${span}</span>${partial && H.next ? '<span>· load more for the full total</span>' : ''}`;
+    <span><b>${sm.tokens}</b> tokens · <b>${sm.wallets}</b> wallets</span><span>${span}</span>${sm.intearPriced ? `<span>incl. ${sm.intearPriced} Intear-priced</span>` : ''}${partial && H.next ? '<span>· load more for the full total</span>' : ''}`;
 }
 function localSummary(rows) {
-  const sm = { trades: rows.length, buys: 0, sells: 0, buy_usd: 0, sell_usd: 0, buy_near: 0, sell_near: 0, first: null, last: null };
+  const sm = { trades: rows.length, buys: 0, sells: 0, buy_usd: 0, sell_usd: 0, buy_near: 0, sell_near: 0, first: null, last: null, intearPriced: 0 };
   const tk = new Set(), wl = new Set();
   for (const r of rows) {
-    if (r.side === 'buy') { sm.buys++; sm.buy_usd += r.usd || 0; sm.buy_near += r.near || 0; } else { sm.sells++; sm.sell_usd += r.usd || 0; sm.sell_near += r.near || 0; }
+    if (r.side === 'buy') { sm.buys++; sm.buy_usd += histUsd(r) || 0; sm.buy_near += r.near || 0; } else { sm.sells++; sm.sell_usd += histUsd(r) || 0; sm.sell_near += r.near || 0; }
+    if (r.near == null || !(H.rate || nearUsd)) sm.intearPriced++;
     tk.add(r.token); wl.add(r.trader);
     sm.first = sm.first == null ? r.ts : Math.min(sm.first, r.ts); sm.last = sm.last == null ? r.ts : Math.max(sm.last, r.ts);
   }
@@ -2897,6 +2989,7 @@ async function histSearchIntear(more) {
       else f.scan = true; // Nearly has too many tokens for one Intear filter: read the newest trades and keep the launchpad ones
     }
     H.iq = f; H.next = null; H.rows = 0; H.last = [];
+    H.rate = nearUsd || null; // one rate for the whole result set: rows, market caps and totals all use it
     $('h-rows').innerHTML = ''; $('h-sum').innerHTML = ''; $('h-msg').textContent = 'Searching Intear…';
   }
   let res;
@@ -2911,6 +3004,7 @@ async function histSearchIntear(more) {
   H.rows += res.rows.length; H.next = res.next;
   $('h-more').hidden = !H.next;
   $('h-sum').innerHTML = sumHtml(localSummary(H.last), true);
+  const hn = $('h-note'); if (hn && H.rate) hn.textContent = `USD & MC in this panel are estimates: each trade's NEAR amount × the NEAR price at search time ($${H.rate.toFixed(3)}/NEAR) — not the rate at trade time.`;
   const scanNote = H.iq.scan && !H.iq.wallet && !H.iq.token ? ' Tip: search a wallet or token to go further back faster.' : '';
   $('h-msg').textContent = H.rows ? `Showing ${H.rows.toLocaleString()} trade${H.rows === 1 ? '' : 's'}, newest first (from Intear).${H.next ? scanNote : ' That\'s all of them.'}`
     : (H.next ? 'No matches in the newest trades yet. Press Load more to look further back.' : 'No trades match this search.');
@@ -3094,7 +3188,7 @@ const RECENT_COUNT = 100;
 let recentOn = store.get('tape.recentOnOpen', true);
 try { localStorage.removeItem('tape.recentRows'); } catch (e) {} // rows saved by an earlier version
 const RF = { running: false, lastAt: 0, lastErr: null, added: 0 };
-async function intearGet(path, params) {
+async function intearHttpGet(path, params) {
   const q = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) if (v != null && v !== '') q.set(k, Array.isArray(v) ? v.join(',') : String(v));
   const r = await fetchT(CFG.INTEAR_HTTP + path + '?' + q, { cache: 'no-store' }, 15000);
@@ -3102,10 +3196,71 @@ async function intearGet(path, params) {
   if (!r.ok || !j || j.error) throw new Error(j && j.error ? (j.error.message || j.error.code) : 'Intear answered ' + r.status);
   return j;
 }
+// the same question over the dashboard's live Intear connection (a backup when the web request fails)
+async function intearWsGet(path, params) {
+  const t0 = Date.now();
+  while (!(I.ws && I.ok) && Date.now() - t0 < 8000) await sleep(250); // the live connection may still be opening
+  if (!(I.ws && I.ok)) throw new Error('live connection not open');
+  const p = Object.assign({}, params);
+  if (typeof p.sort === 'string') p.sort = { by: p.sort.replace(/^-/, ''), desc: p.sort.startsWith('-') };
+  const method = path === '/trades' ? 'trades.query' : 'tokens.get';
+  return iRequest(I.ws, method, p).promise;
+}
+async function intearGet(path, params) {
+  try { return await intearHttpGet(path, params); }
+  catch (e) {
+    try { const j = await intearWsGet(path, params); RF.viaWs = (RF.viaWs || 0) + 1; return j; }
+    catch (e2) { throw new Error(e.message + '; backup: ' + (e2.message || e2.code || 'failed')); }
+  }
+}
+// Intear refuses a trade lookup that covers more than 100 tokens, so the safety net's newest-trades
+// lookup works in two steps: 1. ask each launchpad which of its tokens are trading (most volume in
+// the last day, plus the newest), 2. ask for the newest trades of those tokens, 100 tokens per request.
+const TOKENS_PER_QUERY = 100;
+// every token that traded in the last 24 hours, per launchpad: paged 100 at a time by volume until volume is 0
+async function activeLaunchpadTokens() {
+  const ids = new Set();
+  const perPad = async pp => {
+    for (let page = 0; page < 10; page++) {
+      const r = await intearGet('/tokens', { fields: ['volume_usd_24h'], parent: pp, sort: '-volume_usd_24h', limit: 100, offset: page * 100 });
+      const rows = tableRows(r);
+      let more = rows.length === 100;
+      for (const o of rows) { if (Number(o.volume_usd_24h) > 0) ids.add(o.account_id); else more = false; }
+      if (!more) return true;
+    }
+    return false; // over 1,000 trading tokens: not complete
+  };
+  const newest = pp => intearGet('/tokens', { fields: ['created_at'], parent: pp, sort: '-created_at', limit: 15 }).then(r => tableRows(r).forEach(o => ids.add(o.account_id)));
+  const res = await Promise.allSettled(LAUNCH_PARENTS.map(perPad).concat(LAUNCH_PARENTS.map(newest)));
+  const pads = res.slice(0, LAUNCH_PARENTS.length);
+  if (pads.some(r => r.status === 'rejected')) throw (pads.find(r => r.status === 'rejected').reason);
+  if (pads.some(r => r.value === false)) throw new Error('too many trading tokens to list');
+  return [...ids].filter(id => padOf(id));
+}
+// On the VPS the tape-bot already holds the newest trades (trades.json); the server-data script at
+// the bottom hands that snapshot over here, so opening the page needn't ask Intear for them again.
+let tapeSeedResolve = null;
+const tapeSeed = new Promise(res => { tapeSeedResolve = res; });
 async function fillRecent(reason) {
   if (!recentOn || RF.running) return;
   RF.running = true;
   try {
+    if (reason === 'open' && PROXY_MODE) try {
+      const snap = await Promise.race([tapeSeed, sleep(900).then(() => null)]);
+      if (snap && snap.rows && snap.columns && snap.rows.length) {
+        // always seed what the bot has (addTrades dedupes): even a stale snapshot beats an empty tape
+        intearRows(snap.rows, snap.columns, true);
+        const ci = snap.columns.indexOf('timestamp_millis');
+        let newest = 0, oldest = Infinity;
+        if (ci >= 0) for (const r of snap.rows) { if (r[ci] > newest) newest = r[ci]; if (r[ci] < oldest) oldest = r[ci]; }
+        if (newest && Date.now() - newest < 120e3) {
+          // fresh enough: skip the Intear round-trips below
+          loadRecentLaunches(oldest === Infinity ? Date.now() : oldest);
+          RF.lastAt = Date.now(); RF.lastErr = null; RF.added += snap.rows.length;
+          return;
+        }
+      }
+    } catch (e) { /* snapshot unusable: fall through to the Intear round-trips */ }
     const nearlyParent = LAUNCH_PARENTS.filter(x => x.includes('nearlytrade'));
     const hootParents = LAUNCH_PARENTS.filter(x => x.includes('justhoot'));
     // Nearly has too many tokens for one launchpad filter, so ask for its tokens that are trading:
@@ -3163,7 +3318,7 @@ updateFilterBadge();
 renderWatchList();
 CFG.PADS.forEach(p => needMeta(p.token)); // fallback logos
 render();
-(async () => { await loadRefPrices(); await loadNearUsd(); if (nearUsd) showPx('NEAR', nearUsd, null); scheduleRender(); })();
+(async () => { loadRefPrices().then(scheduleRender); await loadNearUsd(); if (nearUsd) showPx('NEAR', nearUsd, null); scheduleRender(); })();
 connectPrices();
 needMeta(TEAR_ID);
 fillRecent('open'); // the last 100 launchpad trades
@@ -3187,6 +3342,7 @@ loop();
       .catch(function () { return null; });
   }
   jget('trades.json').then(function (d) {
+    if (typeof tapeSeedResolve === 'function') { tapeSeedResolve(d); return; } // fillRecent seeds from it (or falls back to Intear)
     if (d && d.rows && d.columns && typeof intearRows === 'function') {
       try { intearRows(d.rows, d.columns, true); } catch (e) { /* live feed still covers us */ }
     }
