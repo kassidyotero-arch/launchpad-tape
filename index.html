@@ -169,6 +169,17 @@ a { color: inherit; }
 .alert-card.launch .sym { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; min-width: 0; padding-right: 36px; }
 .alert-card.launch .sym .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 0 1 auto; }
 .alert-card.launch .sym .soci { flex: none; margin-left: 0; gap: 3px; }
+.alert-card.launch.wtrade { border-top-color: var(--gold); background: linear-gradient(var(--gold-soft), transparent 65%), var(--panel); }
+.alert-card.launch.wtrade .sym { color: var(--fg); }
+.alert-card .newtag.buytag { background: var(--buy); color: #fff; } .alert-card .newtag.selltag { background: var(--sell); color: #fff; }
+.alert-card .wline { display: flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; font-size: 12.5px; color: var(--muted); }
+.alert-card .wline .wh { color: var(--gold); font-weight: 700; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.alert-card .wline .amt { font-weight: 700; font-family: var(--font-data); }
+.alert-card.wbuy .wline .amt { color: var(--buy); } .alert-card.wsell .wline .amt { color: var(--sell); }
+.alert-card .wline .nr { font-family: var(--font-data); }
+.alert-card .wline .mcl { font: 11.5px var(--font-data); } .alert-card .wline .mcl b { color: var(--fg); }
+@keyframes gold-card-glow { 0% { box-shadow: 0 0 0 2px var(--gold), 0 0 20px var(--gold-strong); } 100% { box-shadow: 0 0 0 0 transparent; } }
+.alert-card.launch.wtrade.glow { animation: gold-card-glow 2.4s ease-out both; }
 .alert-card .ltax { font: 11px var(--font-data); color: var(--muted); white-space: nowrap; }
 .alert-card .ltax b { font-weight: 700; } .alert-card .ltax .tb { color: var(--buy); } .alert-card .ltax .ts { color: var(--sell); }
 .soci { display: inline-flex; gap: 3px; align-items: center; vertical-align: middle; margin-left: 2px; }
@@ -347,6 +358,14 @@ tbody tr.launch.watched .lrow .lic { border-color: var(--gold); }
 .wallet .hw:hover { color: var(--fg); background: var(--panel-2); }
 .wallet .hw:focus-visible { outline: 2px solid var(--nearly); }
 .wallet .hw svg { width: 12px; height: 12px; }
+.big-box { border-top: 1px solid var(--line); padding-top: 10px; display: grid; gap: 8px; font-size: 13px; }
+.big-box .head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.big-box .head .note, .big-box .hint { color: var(--muted); font-size: 12px; }
+.big-box .row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+.big-box label.f { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+.big-box input[type=number] { width: 110px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font: 13px var(--font-data); color: var(--fg); }
+.linkbtn { all: unset; cursor: pointer; color: var(--nearly); text-decoration: underline; }
+.linkbtn:focus-visible { outline: 2px solid var(--nearly); outline-offset: 2px; }
 .watch-box { border-top: 1px solid var(--line); padding-top: 10px; display: grid; gap: 8px; }
 .watch-head { display: flex; align-items: baseline; gap: 8px; font-size: 13px; }
 .watch-head b { color: var(--gold); }
@@ -590,6 +609,21 @@ td.amt .sub { font-weight: 400; }
       </div>
       <span class="hist-note" id="hist-note">Not set. History needs the Launchpad Tape server running somewhere 24/7.</span>
     </form>
+    <div class="big-box" aria-label="Big trade sound">
+      <div class="head"><b>💰 Big trade sound</b><span class="note">plays when a trade's size is in your range</span></div>
+      <div class="row">
+        <label class="chk"><input type="checkbox" id="big-on"> Sound on</label>
+        <label class="f" for="big-min">Min $ <input type="number" id="big-min" min="0" step="any" inputmode="decimal"></label>
+        <label class="f" for="big-max">Max $ <input type="number" id="big-max" min="0" step="any" inputmode="decimal" placeholder="no max"></label>
+        <div class="seg" role="group" aria-label="Which trades">
+          <button type="button" id="big-both" aria-pressed="true">Buys + sells</button>
+          <button type="button" id="big-buy" aria-pressed="false">Buys</button>
+          <button type="button" id="big-sell" aria-pressed="false">Sells</button>
+        </div>
+        <button class="btn" id="big-test" type="button">▶ Test</button>
+      </div>
+      <div class="hint" id="big-hint"></div>
+    </div>
     <div class="watch-box" aria-label="Watched wallets">
       <div class="watch-head"><b>★ Watched wallets</b><span id="watch-count"></span></div>
       <div class="watch-chips" id="watch-chips"></div>
@@ -772,6 +806,8 @@ const CFG = {
   INTEAR_IDLE_MS: 20000,   // the server pings every 15 s; silence this long means the socket is dead
   INTEAR_GRACE_MS: 4000,   // how long a dropped Intear feed may reconnect before on-chain decoding steps in
   ALERTS_POLL_MS: 5000, // RAEN alerts refresh (slower, to stay under RAEN's limit); backs off further on errors
+  RAEN_MAX_POLL_MS: 15000, // trades: slowest RAEN poll while it keeps failing (it never stops)
+  RAEN_POLL_MS: 1000, // fastest RAEN poll; doubles automatically if RAEN answers 429
   ALERTS_MAX_POLL_MS: 30000,
   MAX_TRADES: 3000,
   MAX_ROWS: 400,
@@ -1049,7 +1085,7 @@ async function tearPriceUsd() {
 async function updateTear() {
   if (Date.now() - tearLiveAt < 20000) return; // Intear is pushing it live
   try { // prefer Intear's own market cap (circulating-supply basis), same as the live pushes
-    const j = await intearGet('/tokens?ids=' + TEAR_ID + '&fields=market_cap_usd,price_usd');
+    const j = await intearGet('/tokens', { ids: TEAR_ID, fields: ['market_cap_usd', 'price_usd'] });
     const row = j ? tableRows(j).find(o => o.account_id === TEAR_ID) : null;
     if (row && Number(row.market_cap_usd) > 0) { tearFromIntear(row); return; }
   } catch (e) {}
@@ -1391,6 +1427,18 @@ function derive(t) {
     const capUsd = cap != null && rate ? cap * rate : (usd != null && tok && supply != null ? usd / tok * supply : null);
     return { m, tok, near, usd, price, cap, capUsd, est };
   }
+  if (t.src === 'raen') {
+    // RAEN already gives human-readable NEAR, token and USD amounts.
+    const tok = t.tokens;
+    let near = t.near, est = false;
+    if (near == null && t.usd != null && rate) { near = t.usd / rate; est = true; }
+    const usd = near != null && rate ? near * rate : (t.usd != null ? t.usd : null);
+    const price = near != null && tok ? near / tok : null;
+    const cap = price != null && supply != null ? price * supply : null;
+    const usdPerNear = usd != null && near ? usd / near : rate;
+    const capUsd = cap != null && usdPerNear ? cap * usdPerNear : null;
+    return { m, tok, near, usd, price, cap, capUsd, est };
+  }
   const tok = dec != null ? Number(t.tokenRaw) / Math.pow(10, dec) : null;
   const near = t.nearRaw != null ? Number(t.nearRaw) / 1e24 : counterNear(t);
   let nearV = near, estV = t.via === 'est' && near != null;
@@ -1693,7 +1741,7 @@ function addLaunch(l, watchHits, past) {
 }
 
 // In Fastest mode the same swap can arrive from both feeds; the first one wins, the second only fills gaps.
-function nearOf(t) { return t.src === 'intear' ? t.near : (t.nearRaw != null ? Number(t.nearRaw) / 1e24 : null); }
+function nearOf(t) { return (t.src === 'raen' || t.src === 'intear') ? t.near : (t.nearRaw != null ? Number(t.nearRaw) / 1e24 : null); }
 function tokensOf(t) {
   if (t.tokens != null) return t.tokens;
   if (t.tokenRaw == null) return null;
@@ -1740,6 +1788,7 @@ function addTrades(list, sortAfter, opts) {
   const past = !!(opts && opts.past);
   let added = 0;
   const watchHits = [];
+  const newLive = [];
   for (const t of list) {
     if (t.kind === 'launch') { if (addLaunch(t, past ? [] : watchHits, past)) added++; continue; }
     if (seenIds.has(t.id)) continue;
@@ -1761,11 +1810,12 @@ function addTrades(list, sortAfter, opts) {
     if (!past || !t.seen) t.seen = { [srcKey]: t.seenAt };
     if (!past && isWatched(t.trader)) { t.watchedAt = t.seenAt; watchHits.push(t); }
     if (k) txKeys.set(k, t);
-    trades.push(t); if (!past) freshIds.add(t.id); added++;
+    trades.push(t); if (!past) { freshIds.add(t.id); newLive.push(t); } added++;
     needMeta(t.token); needTax(t.token); needSocials(t.token);
     if (t.counter !== CFG.WNEAR) needMeta(t.counter);
   }
   if (watchHits.length) onWatchedTrades(watchHits);
+  if (newLive.length) checkBigTrades(newLive);
   if (!added) return;
   trades.sort((a, b) => b.seenAt - a.seenAt || b.ts - a.ts || (a.id < b.id ? 1 : -1));
   if (trades.length > CFG.MAX_TRADES) { for (const t of trades.splice(CFG.MAX_TRADES)) { seenIds.delete(t.id); const k = txKeyOf(t); if (k && txKeys.get(k) === t) txKeys.delete(k); if (t.kind === 'launch') launches.delete(t.token); } }
@@ -1844,7 +1894,52 @@ const IS_PHONE = (() => { try { return matchMedia('(pointer: coarse)').matches &
 let source = store.get('tape.source2', '') || (IS_PHONE ? 'intear' : 'both');
 if (source === 'raen') { source = 'both'; store.set('tape.source2', 'both'); }
 const pageOpenedAt = Date.now();
-let chainOk = false;
+let raenPrimedFrom = 0;
+let raenPrimed = false, raenFails = 0, raenDownUntil = 0, raenLastOk = 0, raenHealth = null;
+let raenPollMs = CFG.RAEN_POLL_MS, raenOkStreak = 0;
+let chainOk = false, raenOk = false;
+
+function mapRaen(x) {
+  if (!x || !x.token || !x.id) return null;
+  const pad = x.id.startsWith('hoot:') ? 'hoot' : x.id.startsWith('nearly:') ? 'nearly' : (padOf(x.token) || {}).id;
+  if (!pad) return null;
+  let tx = null;
+  if (pad === 'hoot') { const p = x.id.split(':')[1]; if (/^[1-9A-HJ-NP-Za-km-z]{43,44}$/.test(p)) tx = p; }
+  return {
+    id: 'raen:' + x.id, src: 'raen', ts: +x.at || Date.now(), h: null, tx, receipt: x.receipt || null,
+    pad, token: x.token, side: x.side === 'sell' ? 'sell' : 'buy', trader: x.trader || '?',
+    near: typeof x.near === 'number' ? x.near : null,
+    tokens: typeof x.tokens === 'number' ? x.tokens : null,
+    usd: typeof x.usd === 'number' ? x.usd : null,
+    counter: CFG.WNEAR,
+  };
+}
+
+async function raenTick() {
+  reqTimes.push(Date.now());
+  const r = await fetchT(CFG.RAEN + '/trades', { headers: { Authorization: 'Bearer ' + raenKey }, cache: 'no-store' }, CFG.RAEN_TIMEOUT_MS);
+  if (r.status === 401 || r.status === 403) { const e = new Error('RAEN refused the key'); e.raenAuth = true; throw e; }
+  if (r.status === 429) {
+    const ra = parseFloat(r.headers.get('Retry-After')) || 10;
+    const e = new Error('RAEN rate limit'); e.retryMs = ra * 1000; throw e;
+  }
+  if (!r.ok) throw new Error(`RAEN answered ${r.status}`);
+  const j = await r.json();
+  raenHealth = j.healthy || null;
+  const list = (j.trades || []).map(mapRaen).filter(Boolean);
+  if (!raenPrimed) {
+    // first answer after (re)starting: older trades are history, but the last few seconds are kept so a
+    // feed switched on mid-session can't miss a trade that happened during the switch
+    const cutoff = raenPrimedFrom - CFG.SWITCH_OVERLAP_MS;
+    const recent = [];
+    for (const t of list) { if (t.ts >= cutoff && pageOpenedAt < cutoff) recent.push(t); else seenIds.add(t.id); }
+    raenPrimed = true;
+    if (recent.length) addTrades(recent);
+  } else addTrades(list);
+  raenLastOk = Date.now();
+}
+
+function raenWanted() { return false; } // trades never come from RAEN (alerts only)
 
 
 
@@ -1859,7 +1954,7 @@ function chainWanted() {
   if (source === 'both' && CFG.HOT_STANDBY) return true; // all feeds race; whichever sees a trade first wins
   return !intearHealthy(); // Intear mode: on-chain only steps in when Intear is down
 }
-function activeSource() { return [intearWanted() && 'intear', chainWanted() && 'chain'].filter(Boolean).join('+'); }
+function activeSource() { return [intearWanted() && 'intear', raenWanted() && 'raen', chainWanted() && 'chain'].filter(Boolean).join('+'); }
 let lastActive = null;
 
 function refreshState() {
@@ -1868,11 +1963,39 @@ function refreshState() {
   if (!running) return;
   const parts = [];
   if (intearWanted() && I.ok && intearTradesFlowing()) parts.push(I.subRefused || I.tradesStale ? 'Intear (backup polling)' : 'Intear');
+  if (raenWanted() && raenOk) parts.push('RAEN');
   if (chainWanted() && chainOk) parts.push('chain');
+  const down = raenWanted() && raenHealth ? Object.keys(raenHealth).filter(k => raenHealth[k] === false) : [];
   if (!parts.length) { setState('err', 'Reconnecting'); return; }
-  setState('live', 'Live · ' + parts.join(' + '));
+  setState(down.length ? 'err' : 'live', 'Live · ' + parts.join(' + ') + (down.length ? ' · RAEN reports ' + down.join(', ') + ' delayed' : ''));
 }
 
+
+let raenWake = null;
+const raenNap = ms => new Promise(r => { let done = false; const fin = () => { if (!done) { done = true; raenWake = null; r(); } }; raenWake = fin; sleep(ms).then(fin); });
+async function raenLoop() {
+  let wasWanted = false;
+  while (true) {
+    if (!running || !raenWanted()) { wasWanted = false; raenOk = false; refreshState(); await sleep(500); continue; }
+    if (!wasWanted) { raenPrimed = false; wasWanted = true; raenPrimedFrom = Date.now(); } // (re)start at "now"; only a few seconds of overlap
+    const started = Date.now();
+    try {
+      await raenTick();
+      raenFails = 0; raenOk = true; raenStatus.tradesErr = null; raenStatus.tradesOkAt = Date.now();
+      // adaptive speed: creep back toward the fastest interval after a run of clean answers
+      raenPollMs = CFG.RAEN_POLL_MS; // RAEN answered: back to full speed right away
+      refreshState();
+      await raenNap(Math.max(CFG.RAEN_MIN_GAP_MS, raenPollMs - (Date.now() - started))); // steady cadence, never back to back
+    } catch (e) {
+      raenFails++; raenOk = false; raenOkStreak = 0;
+      // Never stop and never show a banner: slow down step by step and keep trying; Settings shows the status.
+      raenPollMs = Math.min(CFG.RAEN_MAX_POLL_MS, Math.max(CFG.RAEN_POLL_MS, raenPollMs * 2));
+      raenStatus.tradesErr = describeRaenError(e); raenStatus.tradesErrAt = Date.now();
+      refreshState();
+      await raenNap(Math.max(e.retryMs || 0, raenPollMs));
+    }
+  }
+}
 
 let lastChainProgress = Date.now();
 // Optimistic blocks arrive ~1 s before they're final. The page checks once whether the block service holds an
@@ -2012,7 +2135,7 @@ setInterval(() => {
   }
 }, 2000);
 // Coming back online or back to this tab: restart both feeds right away instead of waiting for timeouts.
-function kickFeeds() { lastChainProgress = Date.now(); chainAbort.abort(); if (I.ws) { try { I.ws.close(); } catch (e) {} } }
+function kickFeeds() { lastChainProgress = Date.now(); chainAbort.abort(); raenDownUntil = 0; raenWake && raenWake(); if (I.ws) { try { I.ws.close(); } catch (e) {} } }
 window.addEventListener('online', kickFeeds);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && lastBlock && Date.now() - lastBlock.ts > CFG.MAX_LAG_MS) kickFeeds(); });
 // ---------- launch detection, Intear side ----------
@@ -2344,8 +2467,53 @@ let serverAlerts = []; // tape-bot alerts fed in from the VPS snapshot (proxy-mo
 let launchAlerts = (store.get('tape.launchAlerts', []) || []).filter(a => a && a.token).slice(0, 20);
 function saveLaunchAlerts() { store.set('tape.launchAlerts', launchAlerts.map(a => ({ id: a.id, kind: 'launch', token: a.token, pad: a.pad, creator: a.creator, sym: a.sym, at: a.at, watched: a.watched }))); }
 // the 10 newest alerts that haven't been cleared; older ones drop off as new ones arrive
+// a watched wallet bought or sold: one card per trade (gold, BUY / SELL tag), kept with the latest 10 alerts
+let tradeAlerts = (store.get('tape.tradeAlerts', []) || []).filter(a => a && a.token).slice(0, 20);
+const tradeRefs = new Map(); // alert id -> live trade object (amounts fill in as prices arrive)
+function saveTradeAlerts() { store.set('tape.tradeAlerts', tradeAlerts.map(a => ({ id: a.id, kind: 'wtrade', token: a.token, pad: a.pad, side: a.side, trader: a.trader, usd: a.usd, near: a.near, mc: a.mc, tx: a.tx, at: a.at }))); }
+function tradeAlert(t) {
+  if (!t || !t.token) return; // bot watch pings ({id, kind:'watch'}) have no trade behind them; they ring via watchUnread instead
+  const id = 'W:' + (t.tx || t.id) + ':' + t.token + ':' + t.side;
+  if (tradeAlerts.some(a => a.id === id)) return;
+  const d = derive(t);
+  const a = { id, kind: 'wtrade', token: t.token, pad: t.pad, side: t.side, trader: t.trader, usd: d.usd, near: d.near, mc: d.capUsd, tx: t.tx, at: t.ts || Date.now() };
+  tradeAlerts.unshift(a); if (tradeAlerts.length > 20) tradeAlerts.length = 20;
+  tradeRefs.set(id, t);
+  knownAlertIds.add(id);
+  if (!dismissed.has(id)) { unreadAlerts.add(id); shakeFrom.set(id, Date.now()); setTimeout(() => { alertsSig = ''; renderTicker(); }, 3100); }
+  needTax(t.token); needSocials(t.token); needMeta(t.token);
+  saveTradeAlerts(); alertsSig = ''; renderTicker(); updateBell();
+}
+function tradeAlertHtml(a) {
+  const t = tradeRefs.get(a.id);
+  if (t) { const d = derive(t); const ou = a.usd, on = a.near, om = a.mc; if (d.usd != null) a.usd = d.usd; if (d.near != null) a.near = d.near; if (d.capUsd != null) a.mc = d.capUsd; if (a.usd !== ou || a.near !== on || a.mc !== om) saveTradeAlerts(); }
+  const m = meta.get(a.token);
+  const sym = (m && !m.failed && m.symbol) || a.token.split('.')[0].replace(/-[0-9a-f]{6}$/, '').toUpperCase();
+  const icon = m && m.icon ? `<img class="ic" src="${esc(m.icon)}" alt="">` : '<span class="ic"></span>';
+  const p = CFG.PADS.find(x => x.id === a.pad) || { name: a.pad, page: '' };
+  const logo = padLogoSrc(a.pad);
+  const pill = `<a class="padpill ${esc(a.pad)}" href="${p.page}${encodeURIComponent(a.token)}" target="_blank" rel="noopener" title="Open ${esc(sym)} on ${esc(p.name)}">${logo ? `<img src="${esc(logo)}" alt="" data-padlogo="${esc(a.pad)}">` : ''}${esc(p.name)}</a>`;
+  const tx = taxes.get(a.token);
+  const tax = tx && !tx.failed && (tx.buy != null || tx.sell != null)
+    ? `<span class="ltax" title="Buy tax ${fmtPct(tx.buy || 0)} · Sell tax ${fmtPct(tx.sell || 0)}">tax <b class="tb">${fmtPct(tx.buy || 0)}</b> / <b class="ts">${fmtPct(tx.sell || 0)}</b></span>` : '';
+  const label = labels[a.trader];
+  const buy = a.side === 'buy';
+  const since = shakeFrom.has(a.id) ? Date.now() - shakeFrom.get(a.id) : Infinity;
+  const anim = since < 3000 ? ` glow" style="animation-delay:-${since}ms` : '';
+  return `<div role="button" tabindex="0" class="alert-card launch wtrade ${buy ? 'wbuy' : 'wsell'}${anim}" data-token="${esc(a.token)}" title="${esc((label || a.trader) + (buy ? ' bought ' : ' sold ') + sym + '\nClick to filter trades by this token')}">
+    <span class="lcol">${icon}${pill}${tax}</span>
+    <span class="rcol">
+      <span class="newtag ${buy ? 'buytag' : 'selltag'}">${buy ? 'BUY' : 'SELL'}</span>
+      <span class="sym"><span class="nm" title="${esc(sym)}">${esc(sym)}</span>${socialsHtml(a.token)}</span>
+      <span class="wline"><span class="wh" title="${esc(a.trader)}">★ ${esc(label || shortAcct(a.trader))}</span><a class="devpk" href="${CFG.EXPLORER_ACCOUNT}${encodeURIComponent(a.trader)}" target="_blank" rel="noopener" title="Open ${esc(a.trader)} on Pikespeak" aria-label="Open wallet ${esc(a.trader)} on Pikespeak">${EXT_ICON}<span>wallet</span></a></span>
+      <span class="wline">${buy ? 'bought' : 'sold'} <span class="amt">${a.usd != null ? fmtUsd(a.usd) : '—'}</span>${a.near != null ? `<span class="nr">${fmtNum(a.near, 2)} Ⓝ</span>` : ''}${a.mc != null ? `<span class="mcl">· MC <b>${fmtUsd(a.mc)}</b></span>` : ''}</span>
+      <span class="ca"><code title="${esc(a.token)}">${esc(a.token)}</code><button class="copy" type="button" data-copy="${esc(a.token)}" title="Copy contract" aria-label="Copy contract ${esc(a.token)}">${COPY_ICON}</button><a class="xsearch" href="${xSearchUrl(a.token)}" target="_blank" rel="noopener" title="Search X for ${esc(a.token)}" aria-label="Search X for ${esc(a.token)}">${SEARCH_ICON}</a></span>
+      <span class="ago" data-ts="${a.at}">${fmtAgo(a.at)}</span>
+    </span></div>`;
+}
+// the 10 newest alerts that haven't been cleared; older ones drop off as new ones arrive
 function allAlerts() {
-  return launchAlerts.concat(serverAlerts, alerts).filter(a => !dismissed.has(a.id)).sort((a, b) => (b.at || 0) - (a.at || 0)).slice(0, CFG.ALERT_MAX);
+  return launchAlerts.concat(tradeAlerts, serverAlerts, alerts).filter(a => !dismissed.has(a.id)).sort((a, b) => (b.at || 0) - (a.at || 0)).slice(0, CFG.ALERT_MAX);
 }
 // when a card is pushed out of the 10, it stops counting on the bell
 let alertsShownIds = '';
@@ -2444,6 +2612,7 @@ function mapAlert(x) {
 }
 function alertHtml(a) {
   if (a.kind === 'launch') return launchAlertHtml(a);
+  if (a.kind === 'wtrade') return tradeAlertHtml(a);
   const m = a.token ? meta.get(a.token) : null;
   const sym = a.symbol || (m && m.symbol) || (a.token ? a.token.split('.')[0].replace(/-[0-9a-f]{6}$/, '').toUpperCase() : 'Alert');
   const icon = m && m.icon ? `<img class="ic" src="${esc(m.icon)}" alt="">` : '<span class="ic">' + (a.kind === 'srv' ? esc((a.symbol || '🤖').split(' ')[0]) : '') + '</span>';
@@ -2461,7 +2630,7 @@ function renderTicker(msgHtml) {
   const track = $('ticker-track'), row = $('ticker-viewport');
   if (msgHtml) { track.innerHTML = `<span class="ticker-msg">${msgHtml}</span>`; $('alerts-count').textContent = ''; alertsSig = ''; return; }
   const shown = allAlerts().filter(a => !dismissed.has(a.id));
-  const sig = shown.map(a => a.id + (a.kind === 'launch' ? ':' + (a.creator || '') + (a.watched ? 'w' : '') + ':' + taxKey(a.token) + ':' + socialsKey(a.token) : '')).join(',') + '|' + shown.map(a => a.token && meta.has(a.token) ? 1 : 0).join('') + '|' + [...unreadAlerts].length;
+  const sig = shown.map(a => a.id + (a.kind === 'wtrade' ? ':' + (tradeRefs.has(a.id) ? derive(tradeRefs.get(a.id)).usd : a.usd) + ':' + taxKey(a.token) + ':' + socialsKey(a.token) + ':' + (meta.get(a.token) || {}).at : '') + (a.kind === 'launch' ? ':' + (a.creator || '') + (a.watched ? 'w' : '') + ':' + taxKey(a.token) + ':' + socialsKey(a.token) : '')).join(',') + '|' + shown.map(a => a.token && meta.has(a.token) ? 1 : 0).join('') + '|' + [...unreadAlerts].length;
   $('alerts-count').textContent = shown.length ? `${shown.length} alert${shown.length === 1 ? '' : 's'}` : '';
   if (sig === alertsSig) return; // unchanged: leave the cards (and the scroll position) alone
   alertsSig = sig;
@@ -2471,7 +2640,7 @@ function renderTicker(msgHtml) {
   row.scrollLeft = keep;
 }
 $('alerts-clear').onclick = () => {
-  for (const a of launchAlerts.concat(serverAlerts, alerts)) dismissed.add(a.id); // everything, not only the 10 on screen
+  for (const a of launchAlerts.concat(tradeAlerts, serverAlerts, alerts)) dismissed.add(a.id); // everything, not only the 10 on screen
   store.set('tape.dismissedAlerts', [...dismissed].slice(-500));
   unreadAlerts.clear(); alertsSig = ''; renderTicker(); updateBell();
 };
@@ -2583,8 +2752,30 @@ $('watch-bell').checked = watchBellOn;
 $('watch-sound').addEventListener('change', e => { watchSoundOn = e.target.checked; store.set('tape.watchSound', watchSoundOn); if (!watchSoundOn) stopWatchSound(); });
 $('watch-bell').addEventListener('change', e => { watchBellOn = e.target.checked; store.set('tape.watchBell', watchBellOn); updateBell(); });
 $('watch-test').onclick = () => { unlockAudio(); setTimeout(playWatchSound, 60); };
+// fields: filled in once at start (rewriting a box while someone types in it would fight their typing)
+function fillBigFields() {
+  $('big-on').checked = !!BIG.on;
+  $('big-min').value = BIG.min ? BIG.min : '';
+  $('big-max').value = BIG.max != null ? BIG.max : '';
+}
+function updateBigUI() {
+  const fmtUsd = n => '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 2 }); // plain numbers, same as typed
+  for (const k of ['both', 'buy', 'sell']) $('big-' + k).setAttribute('aria-pressed', BIG.side === k);
+  const min = Number(BIG.min) || 0, max = BIG.max != null && BIG.max !== '' ? Number(BIG.max) : null;
+  const what = BIG.side === 'buy' ? 'buy' : BIG.side === 'sell' ? 'sell' : 'trade';
+  $('big-hint').textContent = !BIG.on ? 'Off. Turn it on to hear big trades.'
+    : max != null && max < min ? `Min (${fmtUsd(min)}) is higher than Max (${fmtUsd(max)}), so no trade can match. Lower Min or raise Max.`
+    : max != null ? `Every ${what} between ${fmtUsd(min)} and ${fmtUsd(max)} plays the sound. Uses your volume setting.`
+    : `Every ${what} of ${fmtUsd(min)} or more plays the sound. Uses your volume setting. Fill in Max to hear only a range.`;
+}
+$('big-on').onchange = () => { BIG.on = $('big-on').checked; saveBig(); updateBigUI(); };
+$('big-min').addEventListener('input', () => { const v = $('big-min').value; const n = Number(v); BIG.min = v === '' || !isFinite(n) ? 0 : Math.max(0, n); saveBig(); updateBigUI(); });
+$('big-max').addEventListener('input', () => { const v = $('big-max').value; const n = Number(v); BIG.max = v === '' || !isFinite(n) ? null : Math.max(0, n); saveBig(); updateBigUI(); });
+for (const k of ['both', 'buy', 'sell']) $('big-' + k).onclick = () => { BIG.side = k; saveBig(); updateBigUI(); };
+$('big-test').onclick = () => { unlockAudio(); setTimeout(playBigSound, 60); };
 function onWatchedTrades(hits) {
-  if (watchBellOn) { hits.forEach(t => { if (t.kind !== 'launch') watchUnread.add(t.id); }); updateBell(); }
+  for (const t of hits) if (t.kind !== 'launch') tradeAlert(t);
+  if (watchBellOn) { hits.forEach(t => { if (t.kind !== 'launch' && !t.token) watchUnread.add(t.id); }); updateBell(); }
   if (watchSoundOn) {
     // keep the sound looping for 30 s; a newer watched trade extends it, clicking the bell stops it
     watchLoopUntil = Date.now() + CFG.WATCH_REPEAT_MS;
@@ -2647,7 +2838,48 @@ async function playWatchSound() {
   watchSrc = src; src.onended = () => { if (watchSrc === src) watchSrc = null; };
   return buf.duration;
 }
-let watchSrc = null;
+// ---------- big trade sound (your "software interface remove" sound) ----------
+const BIG_MP3 = 'big.mp3';
+let bigBuf = null, bigLoading = null, bigLastAt = 0;
+let BIG = Object.assign({ on: true, min: 1000, max: null, side: 'both' }, store.get('tape.bigTrade', {}) || {});
+function saveBig() { store.set('tape.bigTrade', BIG); }
+function loadBig() {
+  const ctx = audio(); if (!ctx || bigBuf || bigLoading) return bigLoading;
+  bigLoading = soundBytes(BIG_MP3).then(ab => new Promise((ok, fail) => ctx.decodeAudioData(ab, ok, fail)))
+    .then(buf => { bigBuf = buf; return buf; }).catch(() => { bigLoading = null; });
+  return bigLoading;
+}
+async function playBigSound() {
+  const ctx = audio(); if (!ctx || ctx.state !== 'running') return;
+  const buf = bigBuf || await loadBig(); if (!buf) return;
+  const out = ctx.createGain(); out.gain.value = Math.pow(soundVol / 100, 1.6); out.connect(ctx.destination);
+  const src = ctx.createBufferSource(); src.buffer = buf; src.connect(out); src.start();
+}
+// a new live trade whose USD size is in the chosen range plays the sound (several at once: once)
+// A trade whose $ size isn't known yet (the NEAR price hasn't loaded) waits up to 60 s and is checked again.
+let bigPending = [], bigPendingT = null;
+function checkBigTrades(list) {
+  if (!BIG.on || !list.length) return;
+  const min = Number(BIG.min) || 0, max = BIG.max != null && BIG.max !== '' ? Number(BIG.max) : Infinity;
+  const hit = list.filter(t => {
+    if (t.kind) return false;
+    if (t.ts && Date.now() - t.ts > 30e3) return false; // backfilled after a feed hiccup: shown on the tape, but no longer 'live'
+    if (BIG.side !== 'both' && t.side !== BIG.side) return false;
+    const usd = derive(t).usd;
+    if (usd == null) {
+      if (!t._bigWait) t._bigWait = Date.now();
+      if (Date.now() - t._bigWait < 60e3 && !bigPending.includes(t)) bigPending.push(t);
+      return false;
+    }
+    return usd >= min && usd <= max;
+  }).length > 0;
+  if (hit && Date.now() - bigLastAt > 1500) { bigLastAt = Date.now(); playBigSound(); }
+  if (bigPending.length && !bigPendingT) bigPendingT = setTimeout(() => {
+    bigPendingT = null;
+    const again = bigPending.filter(t => Date.now() - t._bigWait < 60e3); bigPending = [];
+    if (again.length) checkBigTrades(again);
+  }, 3000);
+}let watchSrc = null;
 function stopWatchSound() { watchLoopUntil = 0; watchRepeatSeq++; if (watchSrc) { try { watchSrc.stop(); } catch (e) {} watchSrc = null; } }
 function playSynthBell(ctx, out) {
   const t = ctx.currentTime;
@@ -2702,8 +2934,8 @@ function updateSoundBtn() {
 }
 function unlockAudio() {
   const ctx = audio(); if (!ctx) return;
-  if (ctx.state !== 'running') ctx.resume().then(() => { updateSoundBtn(); loadChime(); loadShots(); }).catch(() => {});
-  else { loadChime(); loadShots(); }
+  if (ctx.state !== 'running') ctx.resume().then(() => { updateSoundBtn(); loadChime(); loadShots(); loadBig(); }).catch(() => {});
+  else { loadChime(); loadShots(); loadBig(); }
 }
 document.addEventListener('pointerdown', unlockAudio);
 document.addEventListener('keydown', unlockAudio);
@@ -3178,7 +3410,7 @@ setInterval(() => {
   if (!meta.has(CFG.WNEAR)) meta.set(CFG.WNEAR, { name: 'Wrapped NEAR', symbol: 'wNEAR', decimals: 24 }); // seeded once at startup and never re-fetched (addTrades skips wNEAR counters), so the sweep must not evict it for good
   capMap(taxes, 4000); capMap(socialsMap, 4000);
   capMap(SOC.launchedAt, 4000); capMap(SOC.retryAt, 4000); capMap(SOC.fails, 4000);
-  capMap(lastPriceNear, 4000); capMap(LP.seen, 8000); capMap(knownAlertIds, 5000); capMap(copiedAt, 300);
+  capMap(lastPriceNear, 4000); capMap(LP.seen, 8000); capMap(knownAlertIds, 5000); capMap(copiedAt, 300); capMap(tradeRefs, 100);
 }, 60000);
 
 // ---------- recent trades on open ----------
@@ -3187,10 +3419,10 @@ setInterval(() => {
 const RECENT_COUNT = 100;
 let recentOn = store.get('tape.recentOnOpen', true);
 try { localStorage.removeItem('tape.recentRows'); } catch (e) {} // rows saved by an earlier version
-const RF = { running: false, lastAt: 0, lastErr: null, added: 0 };
+const RF = { running: false, lastAt: 0, lastErr: null, added: 0, how: null, firstErr: null, tries: 0, retryT: null };
 async function intearHttpGet(path, params) {
   const q = new URLSearchParams();
-  for (const [k, v] of Object.entries(params)) if (v != null && v !== '') q.set(k, Array.isArray(v) ? v.join(',') : String(v));
+  for (const [k, v] of Object.entries(params || {})) if (v != null && v !== '') q.set(k, Array.isArray(v) ? v.join(',') : String(v));
   const r = await fetchT(CFG.INTEAR_HTTP + path + '?' + q, { cache: 'no-store' }, 15000);
   let j = null; try { j = await r.json(); } catch (e) {}
   if (!r.ok || !j || j.error) throw new Error(j && j.error ? (j.error.message || j.error.code) : 'Intear answered ' + r.status);
@@ -3237,7 +3469,27 @@ async function activeLaunchpadTokens() {
   if (pads.some(r => r.value === false)) throw new Error('too many trading tokens to list');
   return [...ids].filter(id => padOf(id));
 }
-// On the VPS the tape-bot already holds the newest trades (trades.json); the server-data script at
+async function recentByTokens(limit) {
+  const ids = await activeLaunchpadTokens();
+  if (!ids.length) throw new Error('no active launchpad tokens found');
+  const chunks = [];
+  for (let i = 0; i < ids.length; i += TOKENS_PER_QUERY) chunks.push(ids.slice(i, i + TOKENS_PER_QUERY));
+  const res = await Promise.allSettled(chunks.map(c => intearGet('/trades', { fields: TRADE_FIELDS, token: c, limit, order: 'newest' })));
+  if (res.every(r => r.status === 'rejected')) throw res[0].reason;
+  const rows = [];
+  for (const r of res) if (r.status === 'fulfilled') for (const o of tableRows(r.value)) rows.push(...mapIntear(o));
+  return rows;
+}
+// fallback with no token list at all: newest trades on all of NEAR, keeping the launchpad ones
+async function recentByScan(limit) {
+  const rows = []; let cursor = null;
+  for (let page = 0; page < 20 && rows.length < limit; page++) {
+    const r = await intearGet('/trades', { fields: TRADE_FIELDS, limit: 200, order: 'newest', cursor });
+    for (const o of tableRows(r)) rows.push(...mapIntear(o));
+    cursor = r.next_cursor; if (!cursor) break;
+  }
+  return rows;
+}// On the VPS the tape-bot already holds the newest trades (trades.json); the server-data script at
 // the bottom hands that snapshot over here, so opening the page needn't ask Intear for them again.
 let tapeSeedResolve = null;
 const tapeSeed = new Promise(res => { tapeSeedResolve = res; });
@@ -3261,37 +3513,39 @@ async function fillRecent(reason) {
         }
       }
     } catch (e) { /* snapshot unusable: fall through to the Intear round-trips */ }
-    const nearlyParent = LAUNCH_PARENTS.filter(x => x.includes('nearlytrade'));
-    const hootParents = LAUNCH_PARENTS.filter(x => x.includes('justhoot'));
-    // Nearly has too many tokens for one launchpad filter, so ask for its tokens that are trading:
-    // the most traded today plus the newest ones (a token launched minutes ago is trading but small)
-    const [byVol, byNew] = await Promise.all([
-      intearGet('/tokens', { fields: ['volume_usd_24h'], parent: nearlyParent, sort: '-volume_usd_24h', limit: 120 }).catch(() => null),
-      intearGet('/tokens', { fields: ['created_at'], parent: nearlyParent, sort: '-created_at', limit: 30 }).catch(() => null),
-    ]);
-    const active = [...new Set([].concat(
-      byVol ? tableRows(byVol).filter(o => Number(o.volume_usd_24h) > 0).map(o => o.account_id) : [],
-      byNew ? tableRows(byNew).map(o => o.account_id) : []))];
-    const jobs = [intearGet('/trades', { fields: TRADE_FIELDS, parent: hootParents, limit: RECENT_COUNT, order: 'newest' })];
-    if (active.length) jobs.push(intearGet('/trades', { fields: TRADE_FIELDS, token: active, limit: RECENT_COUNT, order: 'newest' }));
-    const res = await Promise.allSettled(jobs);
-    if (res.every(r => r.status === 'rejected')) throw res[0].reason;
-    const rows = [];
-    for (const r of res) if (r.status === 'fulfilled') for (const o of tableRows(r.value)) rows.push(...mapIntear(o));
+    let rows, how = 'tokens';
+    try {
+      rows = await recentByTokens(RECENT_COUNT);
+      // the token lists cover the last 24 hours: if the 100th trade is older, read all trades instead to be exact
+      rows.sort((a, b) => b.ts - a.ts);
+      if (rows.length < RECENT_COUNT || rows[RECENT_COUNT - 1].ts < Date.now() - 23 * 3600e3) throw new Error('quiet period');
+    } catch (e) { how = 'scan'; RF.firstErr = e.message; rows = await recentByScan(RECENT_COUNT); }
+    RF.how = how;
+    // one row per swap side, newest first, exactly the last 100
+    const seen = new Set();
+    rows = rows.filter(t => { const k = (t.tx || t.id) + '|' + t.token + '|' + t.side; if (seen.has(k)) return false; seen.add(k); return true; });
     rows.sort((a, b) => b.ts - a.ts);
     const pick = rows.slice(0, RECENT_COUNT);
     for (const t of pick) t.seenAt = t.ts;
     const before = trades.length;
     addTrades(pick, false, { past: true });
-    if (reason === 'open' || reason === 'wake') loadRecentLaunches(pick.length ? pick[pick.length - 1].ts : Date.now());
+    if (reason === 'open' || reason === 'wake' || reason === 'retry') loadRecentLaunches(pick.length ? pick[pick.length - 1].ts : Date.now());
+    RF.tries = 0; clearTimeout(RF.retryT);
     RF.lastAt = Date.now(); RF.lastErr = null; RF.added += trades.length - before;
-    if (reason === 'open') { const e = $('empty-msg'); if (e && !pick.length) e.textContent = 'No launchpad trades found right now. New trades appear here live.'; }
+    if (reason === 'open' || reason === 'retry') { const e = $('empty-msg'); if (e && !pick.length) e.textContent = 'No launchpad trades found right now. New trades appear here live.'; }
   } catch (e) {
     RF.lastErr = e.message;
-    if (reason === 'open') { const e2 = $('empty-msg'); if (e2) e2.textContent = "Couldn't load the latest trades right now. New trades appear here live as they happen."; }
+    if (reason === 'open' || reason === 'retry') {
+      RF.tries = (RF.tries || 0) + 1;
+      const wait = [5, 15, 30, 60, 120][Math.min(RF.tries - 1, 4)];
+      const e2 = $('empty-msg');
+      if (e2) e2.innerHTML = `Couldn't load the latest trades yet (${esc(e.message)}). Trying again in ${wait} s… New trades still appear here live as they happen. <button type="button" class="linkbtn" id="recent-retry">Try now</button>`;
+      if (RF.tries <= 8) { clearTimeout(RF.retryT); RF.retryT = setTimeout(() => fillRecent('retry'), wait * 1000); }
+    }
   }
   finally { RF.running = false; }
 }
+document.addEventListener('click', e => { if (e.target && e.target.id === 'recent-retry') { clearTimeout(RF.retryT); fillRecent('retry'); } });
 // the 10 newest launches become (quiet) alert cards; a launch also gets a row in the list when it's
 // newer than the oldest of the 100 trades shown, so the list stays in time order
 async function loadRecentLaunches(oldestShown) {
@@ -3307,7 +3561,12 @@ async function loadRecentLaunches(oldestShown) {
 let hiddenAt = 0;
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) hiddenAt = Date.now();
-  else if (hiddenAt && Date.now() - hiddenAt > 20e3) fillRecent('wake'); // a phone paused the tab: fill the gap
+  else if (hiddenAt && Date.now() - hiddenAt > 20e3) {
+    // a phone paused the tab: fill the gap - but only pay for the refill when the live feed
+    // actually missed something (socket down or silent); a healthy subscription resumes by
+    // after_id and the backup poll covers stalls, so a quick alt-tab costs no Intear requests
+    if (!I.ok || Date.now() - I.lastMsg > 30e3) fillRecent('wake');
+  }
 });
 $('recent-on').checked = recentOn;
 $('recent-on').onchange = () => { recentOn = $('recent-on').checked; store.set('tape.recentOnOpen', recentOn); if (recentOn) fillRecent('setting'); };
@@ -3316,6 +3575,7 @@ $('recent-on').onchange = () => { recentOn = $('recent-on').checked; store.set('
 syncFilterUI();
 updateFilterBadge();
 renderWatchList();
+fillBigFields(); updateBigUI();
 CFG.PADS.forEach(p => needMeta(p.token)); // fallback logos
 render();
 (async () => { loadRefPrices().then(scheduleRender); await loadNearUsd(); if (nearUsd) showPx('NEAR', nearUsd, null); scheduleRender(); })();
@@ -3426,7 +3686,7 @@ loop();
       }
       if (alerts) {
         var mapped = alerts.map(function (a, i) {
-          return { id: 'S:' + a.ts + ':' + i, kind: 'srv', srvKind: a.kind, at: a.ts, title: a.text, side: a.side || null,
+          return { id: 'S:' + a.ts + ':' + a.kind + ':' + (a.token || ''), kind: 'srv', srvKind: a.kind, at: a.ts, title: a.text, side: a.side || null,
                    token: a.token || srvTextToken(a),
                    tone: KIND_TONE[a.kind] || '', symbol: KIND_LABEL[a.kind] || '🤖 Bot' };
         });
